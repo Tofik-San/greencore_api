@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Query, Request, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import os
@@ -18,6 +18,7 @@ app.add_middleware(
 )
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+API_KEY = os.getenv("API_KEY")
 
 @app.get("/health")
 def health():
@@ -26,6 +27,7 @@ def health():
 @app.get("/plants")
 def get_plants(
     request: Request,
+    x_api_key: str = Header(...),
     view: str = Query(None),
     light: str = Query(None),
     beginner_friendly: str = Query(None),
@@ -33,6 +35,9 @@ def get_plants(
     limit: int = Query(10),
     page: int = Query(1)
 ):
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+
     offset = (page - 1) * limit
 
     light_synonyms = {
