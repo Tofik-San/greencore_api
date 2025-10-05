@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, Depends, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
@@ -34,8 +35,9 @@ def verify_api_key(x_api_key: Optional[str] = Header(None)):
 @app.get("/plants", dependencies=[Depends(verify_api_key)])
 def get_plants(
     view: Optional[str] = Query(None),
-    cultivar: Optional[str] = Query(None),
     light: Optional[str] = Query(None),
+    beginner_friendly: Optional[bool] = Query(None),
+    toxicity: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=100)
 ):
@@ -46,13 +48,17 @@ def get_plants(
         query += " AND LOWER(view) LIKE :view"
         params["view"] = f"%{view.lower()}%"
 
-    if cultivar:
-        query += " AND LOWER(cultivar) LIKE :cultivar"
-        params["cultivar"] = f"%{cultivar.lower()}%"
-
     if light:
         query += " AND LOWER(light) LIKE :light"
         params["light"] = f"%{light.lower()}%"
+
+    if beginner_friendly is not None:
+        query += " AND beginner_friendly = :beginner_friendly"
+        params["beginner_friendly"] = beginner_friendly
+
+    if toxicity:
+        query += " AND LOWER(toxicity) = :toxicity"
+        params["toxicity"] = toxicity.lower()
 
     offset = (page - 1) * limit
     query += " LIMIT :limit OFFSET :offset"
