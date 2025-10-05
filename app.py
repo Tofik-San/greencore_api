@@ -1,10 +1,8 @@
-import os
-from fastapi import FastAPI, Depends, Header, HTTPException, Query, Request
+from fastapi import FastAPI, Depends, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
-from starlette.status import HTTP_401_UNAUTHORIZED
+import os
 from typing import Optional
 from fastapi.openapi.utils import get_openapi
 
@@ -24,52 +22,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🔐 Middleware — защита всех маршрутов, включая Swagger
-@app.middleware("http")
-async def secure_all_routes(request: Request, call_next):
-    allowed_paths = ["/docs", "/openapi.json"]
-    api_key = request.headers.get("X-API-Key")
-
-    if request.url.path not in allowed_paths:
-        if api_key != API_KEY:
-            return JSONResponse(
-                status_code=HTTP_401_UNAUTHORIZED,
-                content={"detail": "❌ Access denied: invalid or missing API key"}
-            )
-
-    if request.url.path in allowed_paths:
-        if api_key != API_KEY:
-            return JSONResponse(
-                status_code=HTTP_401_UNAUTHORIZED,
-                content={"detail": "❌ Access to docs denied: provide valid API key"}
-            )
-
-    return await call_next(request)
-
 # DB connection
 engine = create_engine(DATABASE_URL)
 
+# 🔐 API-ключ
 def verify_api_key(x_api_key: Optional[str] = Header(None)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Forbidden: Invalid API Key")
 
+# 🌐 Синонимы
 light_synonyms = {
     "shade": ["тень", "полутень", "рассеянный", "рассеянный свет"],
-    "sun": ["солнце", "полное солнце", "солнечно"],
-    "partial": ["частичное солнце", "частичное освещение"]
+    "sun": ["солнце", "полное солнце", "солнечно", "яркий свет", "прямое солнце"],
+    "partial": ["частичное солнце", "частичное освещение", "утреннее солнце"]
 }
 
 toxicity_synonyms = {
-    "none": ["нет", "безвредно", "не токсично", "нетоксично"],
+    "none": ["нет", "безвредно", "не токсично", "нетоксично", "none"],
     "mild": ["умеренно", "умеренно токсичен", "mild"],
     "toxic": ["ядовито", "токсично", "опасно"]
+}
+
+beginner_synonyms = {
+    "true": ["да", "true", "yes"],
+    "false": ["нет", "false", "no"]
 }
 
 @app.get("/plants", dependencies=[Depends(verify_api_key)])
 def get_plants(
     view: Optional[str] = Query(None),
     light: Optional[str] = Query(None),
-    beginner_friendly: Optional[bool] = Query(None),
+    beginner_friendly: Optional[str] = Query(None),
     toxicity: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=100)
@@ -93,9 +76,12 @@ def get_plants(
             for i, val in enumerate(matched_lights):
                 params[f"light_{i}"] = f"%{val}%"
 
-    if beginner_friendly is not None:
-        query += " AND beginner_friendly = :beginner_friendly"
-        params["beginner_friendly"] = beginner_friendly
+    if beginner_friendly:
+        for key, synonyms in beginner_synonyms.items():
+            if beginner_friendly.lower() in synonyms:
+                query += " AND beginner_friendly = :beginner_friendly"
+                params["beginner_friendly"] = key == "true"
+                break
 
     if toxicity:
         matched_tox = []
@@ -129,6 +115,7 @@ def get_plants(
 def health_check():
     return {"status": "ok"}
 
+# 🧪 Swagger
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -156,6 +143,6 @@ def custom_openapi():
             openapi_schema["paths"][path][method]["security"] = [{"APIKeyHeader": []}]
 
     app.openapi_schema = openapi_schema
-    return openapi_schema
+    return app.openapi_schema
 
 app.openapi = custom_openapi
