@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, Depends, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
@@ -44,7 +43,48 @@ def get_plants(
     query = "SELECT * FROM plants WHERE 1=1"
     params = {}
 
-    if view:
+    
+    # 🧠 Словарь синонимов
+    alias_map = {
+        "light": {
+            "тень": "shade",
+            "полутень": "partial_shade",
+            "рассеянный": "diffused_light",
+            "солнце": "full_sun",
+            "яркий": "bright_light"
+        },
+        "toxicity": {
+            "нет": "none",
+            "безопасно": "none",
+            "умеренно": "mild",
+            "ядовито": "toxic",
+            "опасно": "toxic",
+            "животные": "mild",
+            "дети": "mild"
+        },
+        "beginner_friendly": {
+            "легко": True,
+            "просто": True,
+            "подходит новичку": True,
+            "сложно": False,
+            "только для опытных": False
+        }
+    }
+
+    # 🔁 Преобразуем алиасы
+    if light and light.lower() in alias_map["light"]:
+        light = alias_map["light"][light.lower()]
+
+    if toxicity and toxicity.lower() in alias_map["toxicity"]:
+        toxicity = alias_map["toxicity"][toxicity.lower()]
+
+    if beginner_friendly is not None and isinstance(beginner_friendly, str):
+        val = alias_map["beginner_friendly"].get(beginner_friendly.lower())
+        if val is not None:
+            beginner_friendly = val
+
+
+if view:
         query += " AND LOWER(view) LIKE :view"
         params["view"] = f"%{view.lower()}%"
 
