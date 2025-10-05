@@ -81,24 +81,24 @@ def get_plants(
 
     if beginner_friendly is not None and isinstance(beginner_friendly, str):
         val = alias_map["beginner_friendly"].get(beginner_friendly.lower())
-        if val is not None:
+    if val is not None:
             beginner_friendly = val
 
 
-if view:
-        query += " AND LOWER(view) LIKE :view"
+    if view:
+    query += " AND LOWER(view) LIKE :view"
         params["view"] = f"%{view.lower()}%"
 
     if light:
-        query += " AND LOWER(light) LIKE :light"
+    query += " AND LOWER(light) LIKE :light"
         params["light"] = f"%{light.lower()}%"
 
     if beginner_friendly is not None:
-        query += " AND beginner_friendly = :beginner_friendly"
+    query += " AND beginner_friendly = :beginner_friendly"
         params["beginner_friendly"] = beginner_friendly
 
     if toxicity:
-        query += " AND LOWER(toxicity) = :toxicity"
+    query += " AND LOWER(toxicity) = :toxicity"
         params["toxicity"] = toxicity.lower()
 
     offset = (page - 1) * limit
