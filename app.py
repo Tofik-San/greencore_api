@@ -52,10 +52,13 @@ def apply_synonyms(param: str, category: str):
 
 @app.middleware("http")
 async def verify_api_key(request: Request, call_next):
-    if request.url.path.startswith("/plants"):
+    if request.url.path not in ["/docs", "/openapi.json"]:
         api_key = request.headers.get("X-API-Key")
         if api_key != API_KEY:
-            return JSONResponse(status_code=HTTP_401_UNAUTHORIZED, content={"detail": "Invalid or missing API key"})
+            return JSONResponse(
+                status_code=HTTP_401_UNAUTHORIZED,
+                content={"detail": "❌ Access denied: invalid or missing API key"}
+            )
     return await call_next(request)
 
 @app.get("/plants")
