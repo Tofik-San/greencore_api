@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, Header, HTTPException
+from fastapi import FastAPI, Depends, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
@@ -30,13 +30,45 @@ def verify_api_key(x_api_key: Optional[str] = Header(None)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Forbidden: Invalid API Key")
 
-# 🌱 Эндпоинт: Получение растений
+# 🌱 Эндпоинт: Получение растений с фильтрами и пагинацией
 @app.get("/plants", dependencies=[Depends(verify_api_key)])
-def get_plants():
+def get_plants(
+    light: Optional[str] = Query(None),
+    beginner_friendly: Optional[bool] = Query(None),
+    cultivar: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=100)
+):
+    query = "SELECT * FROM plants WHERE 1=1"
+    params = {}
+
+    if light:
+        query += " AND light = :light"
+        params["light"] = light
+
+    if beginner_friendly is not None:
+        query += " AND beginner_friendly = :beginner_friendly"
+        params["beginner_friendly"] = beginner_friendly
+
+    if cultivar:
+        query += " AND LOWER(cultivar) LIKE :cultivar"
+        params["cultivar"] = f"%{cultivar.lower()}%"
+
+    offset = (page - 1) * limit
+    query += " LIMIT :limit OFFSET :offset"
+    params["limit"] = limit
+    params["offset"] = offset
+
     with engine.connect() as connection:
-        result = connection.execute(text("SELECT * FROM plants"))
+        result = connection.execute(text(query), params)
         plants = [dict(row._mapping) for row in result]
-        return plants
+
+    return {
+        "count": len(plants),
+        "page": page,
+        "limit": limit,
+        "results": plants
+    }
 
 # ❤️ Эндпоинт: Проверка состояния
 @app.get("/health", dependencies=[Depends(verify_api_key)])
@@ -55,7 +87,6 @@ def custom_openapi():
         routes=app.routes,
     )
 
-    # ✅ Исправление KeyError
     if "components" not in openapi_schema:
         openapi_schema["components"] = {}
     if "securitySchemes" not in openapi_schema["components"]:
