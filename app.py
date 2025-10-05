@@ -30,29 +30,29 @@ def verify_api_key(x_api_key: Optional[str] = Header(None)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Forbidden: Invalid API Key")
 
-# 🌱 Эндпоинт: Получение растений с фильтрами и пагинацией
+# 🌱 Эндпоинт: Получение растений с фильтрами
 @app.get("/plants", dependencies=[Depends(verify_api_key)])
 def get_plants(
-    light: Optional[str] = Query(None),
-    beginner_friendly: Optional[bool] = Query(None),
+    view: Optional[str] = Query(None),
     cultivar: Optional[str] = Query(None),
+    light: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=100)
 ):
     query = "SELECT * FROM plants WHERE 1=1"
     params = {}
 
-    if light:
-        query += " AND light = :light"
-        params["light"] = light
-
-    if beginner_friendly is not None:
-        query += " AND beginner_friendly = :beginner_friendly"
-        params["beginner_friendly"] = beginner_friendly
+    if view:
+        query += " AND LOWER(view) LIKE :view"
+        params["view"] = f"%{view.lower()}%"
 
     if cultivar:
         query += " AND LOWER(cultivar) LIKE :cultivar"
         params["cultivar"] = f"%{cultivar.lower()}%"
+
+    if light:
+        query += " AND LOWER(light) LIKE :light"
+        params["light"] = f"%{light.lower()}%"
 
     offset = (page - 1) * limit
     query += " LIMIT :limit OFFSET :offset"
@@ -75,7 +75,7 @@ def get_plants(
 def health_check():
     return {"status": "ok"}
 
-# 🧪 Настройка Swagger с авторизацией
+# 🧪 Swagger авторизация
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
