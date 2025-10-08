@@ -13,88 +13,82 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 app = FastAPI()
 
-# CORS — ограничить потом на релизе
+# 🌐 CORS (ограничить позже на прод)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # на прод — заменить на домен
+    allow_origins=["*"],  # на релизе заменить на конкретный домен
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# 🔗 Подключение к БД
 engine = create_engine(DATABASE_URL)
 
-# 🔐 Проверка ключа
+# 🔐 Проверка API-ключа
 def verify_api_key(x_api_key: Optional[str] = Header(None)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Forbidden: Invalid API Key")
 
-# 🌗 Синонимы
-synonyms = {
-    "light": {
-        "shade": ["тень", "полутень", "рассеянный", "рассеянный свет"],
-        "sun": ["солнце", "полное солнце", "солнечно", "яркий свет", "прямое солнце"],
-        "partial": ["частичное солнце", "частичное освещение", "утреннее солнце"]
-    },
-    "toxicity": {
-        "none": ["нет", "безвредно", "не токсично", "нетоксично"],
-        "mild": ["умеренно", "умеренно токсичен"],
-        "toxic": ["ядовито", "токсично", "опасно"]
-    },
-    "beginner_friendly": {
-        "true": ["да", "true", "yes"],
-        "false": ["нет", "false", "no"]
-    }
-}
-
-def match_synonym(value: str, group: str):
-    """Возвращает нормализованное значение по словарю синонимов"""
-    for key, words in synonyms.get(group, {}).items():
-        if value.lower() in words or value.lower() == key:
-            return key
-    return None
-
+# 🌿 Основной эндпоинт
 @app.get("/plants", dependencies=[Depends(verify_api_key)])
 def get_plants(
-    view: Optional[str] = Query(None),
-    light: Optional[str] = Query(None),
-    beginner_friendly: Optional[str] = Query(None),
-    toxicity: Optional[str] = Query(None),
-    temperature: Optional[str] = Query(None),
-    ru_regions: Optional[str] = Query(None),
-    indoor: Optional[str] = Query(None),
-    outdoor: Optional[str] = Query(None),
+    view: Optional[str] = Query(None, description="Название вида"),
+    light: Optional[str] = Query(
+        None,
+        enum=["тень", "полутень", "яркий"],
+        description="Освещение: тень | полутень | яркий"
+    ),
+    beginner_friendly: Optional[str] = Query(
+        None,
+        enum=["да", "нет"],
+        description="Подходит новичкам: да | нет"
+    ),
+    toxicity: Optional[str] = Query(
+        None,
+        enum=["нет", "умеренно", "токсично"],
+        description="Токсичность: нет | умеренно | токсично"
+    ),
+    temperature: Optional[str] = Query(None, description="Температурный диапазон (например 18–25)"),
+    ru_regions: Optional[str] = Query(None, description="Регионы РФ (RU-MOW|RU-KDA и т.д.)"),
+    indoor: Optional[str] = Query(
+        None,
+        enum=["true", "false"],
+        description="Комнатное растение: true | false"
+    ),
+    outdoor: Optional[str] = Query(
+        None,
+        enum=["true", "false"],
+        description="Уличное растение: true | false"
+    ),
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=100)
 ):
     query = "SELECT * FROM plants WHERE 1=1"
     params = {}
 
-    # 🔍 View
+    # 🌿 View
     if view:
         query += " AND LOWER(view) LIKE :view"
         params["view"] = f"%{view.lower()}%"
 
     # 💡 Light
     if light:
-        matched = match_synonym(light, "light")
-        if matched:
-            query += " AND LOWER(light) LIKE :light"
-            params["light"] = f"%{matched}%"
+        light_map = {"тень": "shade", "полутень": "partial", "яркий": "sun"}
+        query += " AND LOWER(light) LIKE :light"
+        params["light"] = f"%{light_map[light]}%"
 
-    # 🌱 Beginner
+    # 🌱 Beginner friendly
     if beginner_friendly:
-        matched = match_synonym(beginner_friendly, "beginner_friendly")
-        if matched:
-            query += " AND beginner_friendly = :beginner"
-            params["beginner"] = matched == "true"
+        bf_map = {"да": True, "нет": False}
+        query += " AND beginner_friendly = :bf"
+        params["bf"] = bf_map[beginner_friendly]
 
     # ☠️ Toxicity
     if toxicity:
-        matched = match_synonym(toxicity, "toxicity")
-        if matched:
-            query += " AND LOWER(toxicity) = :tox"
-            params["tox"] = matched
+        tox_map = {"нет": "none", "умеренно": "mild", "токсично": "toxic"}
+        query += " AND LOWER(toxicity) = :tox"
+        params["tox"] = tox_map[toxicity]
 
     # 🌡 Temperature
     if temperature:
@@ -131,27 +125,45 @@ def get_plants(
         "results": plants
     }
 
+# 🔎 Детальная карточка
 @app.get("/plant/{plant_id}", dependencies=[Depends(verify_api_key)])
 def get_plant(plant_id: int):
-    """Детальная карточка по ID"""
     with engine.connect() as connection:
         result = connection.execute(text("SELECT * FROM plants WHERE id = :id"), {"id": plant_id}).fetchone()
         if not result:
             raise HTTPException(status_code=404, detail="Plant not found")
     return dict(result._mapping)
 
+# 📊 Статистика по базе
+@app.get("/stats", dependencies=[Depends(verify_api_key)])
+def get_stats():
+    with engine.connect() as connection:
+        query = """
+        SELECT 
+            COUNT(*) AS total,
+            COUNT(DISTINCT view) AS unique_views,
+            COUNT(DISTINCT family) AS unique_families,
+            SUM(CASE WHEN toxicity = 'toxic' THEN 1 ELSE 0 END) AS toxic_count,
+            SUM(CASE WHEN beginner_friendly = true THEN 1 ELSE 0 END) AS beginner_friendly_count
+        FROM plants;
+        """
+        result = connection.execute(text(query)).fetchone()
+    return dict(result._mapping)
+
+# 🩺 Health-check
 @app.get("/health", dependencies=[Depends(verify_api_key)])
 def health_check():
     return {"status": "ok"}
 
-# 🧪 Swagger
+# 📘 Swagger с API-ключом
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
+
     schema = get_openapi(
         title="GreenCore API",
-        version="1.1.0",
-        description="API для доступа к базе растений с расширенными фильтрами и защитой по X-API-Key",
+        version="1.2.0",
+        description="API для доступа к базе растений с фиксированными фильтрами, защитой по X-API-Key и статистикой",
         routes=app.routes,
     )
     schema.setdefault("components", {}).setdefault("securitySchemes", {})
@@ -160,9 +172,11 @@ def custom_openapi():
         "in": "header",
         "name": "X-API-Key"
     }
+
     for path in schema["paths"]:
         for method in schema["paths"][path]:
             schema["paths"][path][method]["security"] = [{"APIKeyHeader": []}]
+
     app.openapi_schema = schema
     return app.openapi_schema
 
