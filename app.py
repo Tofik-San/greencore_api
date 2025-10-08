@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 import os
 from typing import Optional, Literal
 from fastapi.openapi.utils import get_openapi
+import logging
+from datetime import datetime  # ✅ добавлено для логов
 
 load_dotenv()
 
@@ -152,14 +154,39 @@ def get_stats():
 def health_check():
     return {"status": "ok"}
 
+# ✅ ----------------------- ЛОГИРОВАНИЕ -----------------------
+
+logging.basicConfig(
+    filename="greencore_requests.log",
+    level=logging.INFO,
+    format="%(asctime)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+@app.middleware("http")
+async def log_requests(request, call_next):
+    start_time = datetime.now()
+    response = await call_next(request)
+    duration = (datetime.now() - start_time).total_seconds()
+    log_line = (
+        f"{request.client.host} | {request.method} {request.url.path} "
+        f"| status {response.status_code} | time {duration:.2f}s"
+    )
+    if request.query_params:
+        log_line += f" | params: {dict(request.query_params)}"
+    logging.info(log_line)
+    return response
+
+# ✅ ----------------------------------------------------------
+
 # 📘 Swagger
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="1.6.1",
-        description="Выбор поля поиска (view/cultivar) + основные фильтры: light, temperature, toxicity, beginner_friendly, placement",
+        version="1.6.2",
+        description="Добавлено логирование запросов; структура фильтров без изменений.",
         routes=app.routes,
     )
     schema.setdefault("components", {}).setdefault("securitySchemes", {})
