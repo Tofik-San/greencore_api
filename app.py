@@ -67,14 +67,15 @@ async def verify_key(request: Request, call_next):
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing API key")
 
-    row = engine.execute(text("""
-        SELECT 
-            k.id, k.active, k.requests, k.limit_total, k.max_page,
-            p.name AS plan_name, p.allowed_filters, p.allowed_fields
-        FROM api_keys k
-        JOIN plans p ON p.id = k.plan_id
-        WHERE k.api_key = :key
-    """), {"key": api_key}).fetchone()
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT 
+                k.id, k.active, k.requests, k.limit_total, k.max_page,
+                p.name AS plan_name, p.allowed_filters, p.allowed_fields
+            FROM api_keys k
+            JOIN plans p ON p.id = k.plan_id
+            WHERE k.api_key = :key
+        """), {"key": api_key}).fetchone()
 
     if not row or not row.active:
         raise HTTPException(status_code=403, detail="Invalid or inactive key")
@@ -106,10 +107,11 @@ async def verify_key(request: Request, call_next):
     response = await call_next(request)
 
     if response.status_code < 400:
-        engine.execute(
-            text("UPDATE api_keys SET requests = requests + 1 WHERE id = :id"),
-            {"id": request.state.key_id}
-        )
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE api_keys SET requests = requests + 1 WHERE id = :id"),
+                {"id": request.state.key_id}
+            )
 
     return response
 
