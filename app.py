@@ -13,10 +13,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 app = FastAPI()
 
-# 🌐 CORS
+# 🌐 CORS (на прод ограничить доменом)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # на прод ограничить доменом
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -24,12 +24,12 @@ app.add_middleware(
 
 engine = create_engine(DATABASE_URL)
 
-# 🔐 API-ключ
+# 🔐 Проверка API-ключа
 def verify_api_key(x_api_key: Optional[str] = Header(None)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Forbidden: Invalid API Key")
 
-# 🔎 Нормализация temperature
+# 🌡 Нормализация temperature
 def norm_temp_sql(field: str = "temperature") -> str:
     return (
         "LOWER("
@@ -37,39 +37,30 @@ def norm_temp_sql(field: str = "temperature") -> str:
         ")"
     )
 
-# 💡 Паттерны для light (рус/англ + корни слов)
+# 💡 Паттерны освещённости (рус/англ)
 LIGHT_PATTERNS = {
-    "тень": ["full shade", "shade", "тень", "без прямого", "indirect", "diffused"],
-    "полутень": ["part shade", "partial", "полутень", "рассеян", "утреннее", "непрям"],
+    "тень": ["full shade", "shade", "тень", "indirect", "diffused"],
+    "полутень": ["part shade", "partial", "полутень", "рассеян", "утреннее"],
     "яркий": ["full sun", "sun", "прямое солнце", "яркий", "солнеч"],
 }
 
 @app.get("/plants", dependencies=[Depends(verify_api_key)])
 def get_plants(
-    search_field: Optional[Literal["view", "cultivar"]] = Query(
-        "view", description="Поле поиска: view (вид) или cultivar (сорт)"
-    ),
-    query_text: Optional[str] = Query(None, description="Текст для поиска по выбранному полю"),
-    light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None, description="Освещение"),
-    beginner_friendly: Optional[Literal["да", "нет"]] = Query(None, description="Подходит новичкам"),
+    view: Optional[str] = Query(None, description="Название вида растения"),
+    light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None, description="Освещённость"),
+    temperature: Optional[str] = Query(None, description="Температурный диапазон (например 18–25)"),
     toxicity: Optional[Literal["нет", "умеренно", "токсично"]] = Query(None, description="Токсичность"),
-    temperature: Optional[str] = Query(None, description="Диапазон, напр. 18-25"),
-    ru_regions: Optional[str] = Query(None, description="RU-MOW|RU-KDA и т.п."),
-    indoor: Optional[Literal["true", "false"]] = Query(None, description="Комнатное"),
-    outdoor: Optional[Literal["true", "false"]] = Query(None, description="Уличное"),
-    page: int = Query(1, ge=1),
-    limit: int = Query(10, ge=1, le=100),
+    beginner_friendly: Optional[Literal["да", "нет"]] = Query(None, description="Подходит новичкам"),
+    placement: Optional[Literal["комнатное", "садовое"]] = Query(None, description="Тип размещения: комнатное или садовое"),
+    limit: int = Query(50, ge=1, le=100, description="Количество карточек в ответе (по умолчанию 50)"),
 ):
     query = "SELECT * FROM plants WHERE 1=1"
     params: dict = {}
 
-    # 🔍 Поиск по выбранному полю
-    if query_text:
-        if search_field == "view":
-            query += " AND LOWER(view) LIKE :q"
-        elif search_field == "cultivar":
-            query += " AND LOWER(cultivar) LIKE :q"
-        params["q"] = f"%{query_text.lower()}%"
+    # 🌿 View
+    if view:
+        query += " AND LOWER(view) LIKE :view"
+        params["view"] = f"%{view.lower()}%"
 
     # 💡 Light
     if light:
@@ -81,17 +72,6 @@ def get_plants(
                 clauses.append(f"LOWER(light) LIKE :{key}")
                 params[key] = f"%{pat.lower()}%"
             query += " AND (" + " OR ".join(clauses) + ")"
-
-    # 🌱 Beginner friendly
-    if beginner_friendly:
-        query += " AND beginner_friendly = :bf"
-        params["bf"] = (beginner_friendly == "да")
-
-    # ☠️ Toxicity
-    if toxicity:
-        tox_map = {"нет": "none", "умеренно": "mild", "токсично": "toxic"}
-        query += " AND LOWER(toxicity) = :tox"
-        params["tox"] = tox_map[toxicity]
 
     # 🌡 Temperature
     if temperature:
@@ -106,31 +86,33 @@ def get_plants(
         query += f" AND {norm_temp_sql('temperature')} LIKE :temp"
         params["temp"] = f"%{t}%"
 
-    # 🌍 Regions
-    if ru_regions:
-        query += " AND LOWER(ru_regions) LIKE :region"
-        params["region"] = f"%{ru_regions.lower()}%"
+    # ☠️ Toxicity
+    if toxicity:
+        tox_map = {"нет": "none", "умеренно": "mild", "токсично": "toxic"}
+        query += " AND LOWER(toxicity) = :tox"
+        params["tox"] = tox_map[toxicity]
 
-    # 🏡 Indoor/Outdoor
-    if indoor:
-        query += " AND indoor = :indoor"
-        params["indoor"] = (indoor == "true")
-    if outdoor:
-        query += " AND outdoor = :outdoor"
-        params["outdoor"] = (outdoor == "true")
+    # 🌱 Beginner-friendly
+    if beginner_friendly:
+        query += " AND beginner_friendly = :bf"
+        params["bf"] = (beginner_friendly == "да")
 
-    # 📋 Сортировка и пагинация
-    query += " ORDER BY id"
-    offset = (page - 1) * limit
-    query += " LIMIT :limit OFFSET :offset"
+    # 🏡 Placement
+    if placement:
+        if placement == "комнатное":
+            query += " AND indoor = true"
+        elif placement == "садовое":
+            query += " AND outdoor = true"
+
+    # 🔢 Ограничение
+    query += " ORDER BY id LIMIT :limit"
     params["limit"] = limit
-    params["offset"] = offset
 
     with engine.connect() as connection:
         result = connection.execute(text(query), params)
         plants = [dict(row._mapping) for row in result]
 
-    return {"count": len(plants), "page": page, "limit": limit, "results": plants}
+    return {"count": len(plants), "limit": limit, "results": plants}
 
 @app.get("/plant/{plant_id}", dependencies=[Depends(verify_api_key)])
 def get_plant(plant_id: int):
@@ -164,14 +146,14 @@ def get_stats():
 def health_check():
     return {"status": "ok"}
 
-# 📘 Swagger с X-API-Key
+# 📘 Swagger
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="1.4.0",
-        description="Добавлен выбор поля поиска (view/cultivar), фиксированные фильтры, защита X-API-Key",
+        version="1.5.0",
+        description="Основные фильтры (view, light, temperature, toxicity, beginner_friendly, placement)",
         routes=app.routes,
     )
     schema.setdefault("components", {}).setdefault("securitySchemes", {})
