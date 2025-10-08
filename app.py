@@ -5,13 +5,14 @@ from dotenv import load_dotenv
 import os, json, secrets, logging
 from datetime import datetime
 from typing import Optional, Literal
+from fastapi.openapi.utils import get_openapi
 
 # ✅ Загрузка .env
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 MASTER_KEY = os.getenv("MASTER_KEY")
 
-app = FastAPI(title="GreenCore API", version="1.7.0")
+app = FastAPI(title="GreenCore API", version="1.7.1")
 
 # 🌐 CORS
 app.add_middleware(
@@ -213,3 +214,27 @@ async def log_requests(request, call_next):
     duration = (datetime.now() - start).total_seconds()
     logging.info(f"{request.client.host} | {request.method} {request.url.path} | {response.status_code} | {duration:.2f}s")
     return response
+
+# ✅ ------------------ OPENAPI (Authorize button) ------------------
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title="GreenCore API",
+        version="1.7.1",
+        description="API с системой тарифов и авторизацией по ключу.",
+        routes=app.routes,
+    )
+    schema["components"] = {
+        "securitySchemes": {
+            "APIKeyHeader": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
+        }
+    }
+    for path in schema["paths"]:
+        for method in schema["paths"][path]:
+            schema["paths"][path][method]["security"] = [{"APIKeyHeader": []}]
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
