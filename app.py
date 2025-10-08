@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
@@ -6,12 +6,15 @@ import os
 from typing import Optional, Literal
 from fastapi.openapi.utils import get_openapi
 import logging
-from datetime import datetime  # ✅ добавлено для логов
+from datetime import datetime
+import secrets
+from sqlalchemy.exc import IntegrityError
 
+# ✅ Загрузка .env
 load_dotenv()
 
-API_KEY = os.getenv("API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
+MASTER_KEY = os.getenv("MASTER_KEY")
 
 app = FastAPI()
 
@@ -25,11 +28,6 @@ app.add_middleware(
 )
 
 engine = create_engine(DATABASE_URL)
-
-# 🔐 Проверка API-ключа
-def verify_api_key(x_api_key: Optional[str] = Header(None)):
-    if x_api_key != API_KEY:
-        raise HTTPException(status_code=403, detail="Forbidden: Invalid API Key")
 
 # 🌡 Нормализация temperature
 def norm_temp_sql(field: str = "temperature") -> str:
@@ -46,7 +44,8 @@ LIGHT_PATTERNS = {
     "яркий": ["full sun", "sun", "прямое солнце", "яркий", "солнеч"],
 }
 
-@app.get("/plants", dependencies=[Depends(verify_api_key)])
+# 🌿 Главный эндпоинт растений
+@app.get("/plants")
 def get_plants(
     search_field: Optional[Literal["view", "cultivar"]] = Query(
         "view", description="Выбор поля для поиска: view (вид) или cultivar (сорт)"
@@ -56,13 +55,12 @@ def get_plants(
     temperature: Optional[str] = Query(None, description="Температурный диапазон (например 18–25)"),
     toxicity: Optional[Literal["нет", "умеренно", "токсично"]] = Query(None, description="Токсичность"),
     beginner_friendly: Optional[Literal["да", "нет"]] = Query(None, description="Подходит новичкам"),
-    placement: Optional[Literal["комнатное", "садовое"]] = Query(None, description="Тип размещения: комнатное или садовое"),
+    placement: Optional[Literal["комнатное", "садовое"]] = Query(None, description="Тип размещения"),
     limit: int = Query(50, ge=1, le=100, description="Количество карточек в ответе (по умолчанию 50)"),
 ):
     query = "SELECT * FROM plants WHERE 1=1"
     params: dict = {}
 
-    # 🌿 Поиск по виду или сорту
     if view:
         if search_field == "view":
             query += " AND LOWER(view) LIKE :view"
@@ -70,7 +68,6 @@ def get_plants(
             query += " AND LOWER(cultivar) LIKE :view"
         params["view"] = f"%{view.lower()}%"
 
-    # 💡 Light
     if light:
         pats = LIGHT_PATTERNS.get(light, [])
         if pats:
@@ -81,7 +78,6 @@ def get_plants(
                 params[key] = f"%{pat.lower()}%"
             query += " AND (" + " OR ".join(clauses) + ")"
 
-    # 🌡 Temperature
     if temperature:
         t = (
             temperature.lower()
@@ -94,25 +90,21 @@ def get_plants(
         query += f" AND {norm_temp_sql('temperature')} LIKE :temp"
         params["temp"] = f"%{t}%"
 
-    # ☠️ Toxicity
     if toxicity:
         tox_map = {"нет": "none", "умеренно": "mild", "токсично": "toxic"}
         query += " AND LOWER(toxicity) = :tox"
         params["tox"] = tox_map[toxicity]
 
-    # 🌱 Beginner-friendly
     if beginner_friendly:
         query += " AND beginner_friendly = :bf"
         params["bf"] = (beginner_friendly == "да")
 
-    # 🏡 Placement
     if placement:
         if placement == "комнатное":
             query += " AND indoor = true"
         elif placement == "садовое":
             query += " AND outdoor = true"
 
-    # 🔢 Ограничение
     query += " ORDER BY id LIMIT :limit"
     params["limit"] = limit
 
@@ -122,7 +114,8 @@ def get_plants(
 
     return {"count": len(plants), "limit": limit, "results": plants}
 
-@app.get("/plant/{plant_id}", dependencies=[Depends(verify_api_key)])
+
+@app.get("/plant/{plant_id}")
 def get_plant(plant_id: int):
     with engine.connect() as connection:
         row = connection.execute(
@@ -132,7 +125,8 @@ def get_plant(plant_id: int):
             raise HTTPException(status_code=404, detail="Plant not found")
     return dict(row._mapping)
 
-@app.get("/stats", dependencies=[Depends(verify_api_key)])
+
+@app.get("/stats")
 def get_stats():
     with engine.connect() as connection:
         row = connection.execute(
@@ -150,9 +144,11 @@ def get_stats():
         ).fetchone()
     return dict(row._mapping)
 
-@app.get("/health", dependencies=[Depends(verify_api_key)])
+
+@app.get("/health")
 def health_check():
     return {"status": "ok"}
+
 
 # ✅ ----------------------- ЛОГИРОВАНИЕ -----------------------
 
@@ -185,8 +181,8 @@ def custom_openapi():
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="1.6.2",
-        description="Добавлено логирование запросов; структура фильтров без изменений.",
+        version="1.6.3",
+        description="Единая система API-ключей (через БД), старый API_KEY удалён.",
         routes=app.routes,
     )
     schema.setdefault("components", {}).setdefault("securitySchemes", {})
@@ -202,14 +198,9 @@ def custom_openapi():
     return app.openapi_schema
 
 app.openapi = custom_openapi
+
 # ✅ ----------------------- API KEYS SYSTEM -----------------------
 
-import secrets
-from sqlalchemy.exc import IntegrityError
-
-MASTER_KEY = os.getenv("MASTER_KEY")
-
-# 🔑 Генерация нового API-ключа (доступ только по MASTER_KEY)
 @app.post("/generate_key")
 def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"):
     if x_api_key != MASTER_KEY:
@@ -218,7 +209,6 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
     new_key = secrets.token_hex(32)
 
     with engine.begin() as conn:
-        # если таблицы нет — создаём
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS api_keys (
                 id SERIAL PRIMARY KEY,
@@ -231,7 +221,6 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
             );
         """))
 
-        # вставляем новый ключ
         conn.execute(
             text("""
                 INSERT INTO api_keys (api_key, owner, expires_at)
@@ -243,7 +232,6 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
     return {"api_key": new_key, "expires_in_days": 90}
 
 
-# 🔍 Middleware: проверка ключей из БД
 @app.middleware("http")
 async def verify_dynamic_api_key(request, call_next):
     open_paths = ["/docs", "/openapi.json", "/health", "/generate_key"]
@@ -265,7 +253,6 @@ async def verify_dynamic_api_key(request, call_next):
 
     response = await call_next(request)
 
-    # обновляем счётчик запросов
     with engine.begin() as conn:
         conn.execute(
             text("UPDATE api_keys SET requests = requests + 1 WHERE api_key = :key"),
