@@ -202,3 +202,76 @@ def custom_openapi():
     return app.openapi_schema
 
 app.openapi = custom_openapi
+# ✅ ----------------------- API KEYS SYSTEM -----------------------
+
+import secrets
+from sqlalchemy.exc import IntegrityError
+
+MASTER_KEY = os.getenv("MASTER_KEY")
+
+# 🔑 Генерация нового API-ключа (доступ только по MASTER_KEY)
+@app.post("/generate_key")
+def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"):
+    if x_api_key != MASTER_KEY:
+        raise HTTPException(status_code=403, detail="Access denied: admin key required")
+
+    new_key = secrets.token_hex(32)
+
+    with engine.begin() as conn:
+        # если таблицы нет — создаём
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id SERIAL PRIMARY KEY,
+                api_key TEXT UNIQUE NOT NULL,
+                owner TEXT,
+                active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT NOW(),
+                expires_at TIMESTAMP,
+                requests INT DEFAULT 0
+            );
+        """))
+
+        # вставляем новый ключ
+        conn.execute(
+            text("""
+                INSERT INTO api_keys (api_key, owner, expires_at)
+                VALUES (:k, :o, NOW() + INTERVAL '90 days')
+            """),
+            {"k": new_key, "o": owner}
+        )
+
+    return {"api_key": new_key, "expires_in_days": 90}
+
+
+# 🔍 Middleware: проверка ключей из БД
+@app.middleware("http")
+async def verify_dynamic_api_key(request, call_next):
+    open_paths = ["/docs", "/openapi.json", "/health", "/generate_key"]
+    if any(request.url.path.startswith(p) for p in open_paths):
+        return await call_next(request)
+
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing API key")
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT active, expires_at FROM api_keys WHERE api_key = :key"),
+            {"key": api_key}
+        ).fetchone()
+
+    if not row or not row[0]:
+        raise HTTPException(status_code=403, detail="Invalid or inactive API key")
+
+    response = await call_next(request)
+
+    # обновляем счётчик запросов
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE api_keys SET requests = requests + 1 WHERE api_key = :key"),
+            {"key": api_key}
+        )
+
+    return response
+
+# ✅ --------------------------------------------------------------
