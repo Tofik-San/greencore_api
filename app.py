@@ -13,10 +13,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 app = FastAPI()
 
-# CORS (на проде ограничь доменом)
+# 🌐 CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # на прод ограничить доменом
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -29,7 +29,7 @@ def verify_api_key(x_api_key: Optional[str] = Header(None)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Forbidden: Invalid API Key")
 
-# 🔎 Нормализация temperature в SQL (убираем °, c, пробелы, длинные тире)
+# 🔎 Нормализация temperature
 def norm_temp_sql(field: str = "temperature") -> str:
     return (
         "LOWER("
@@ -39,29 +39,20 @@ def norm_temp_sql(field: str = "temperature") -> str:
 
 # 💡 Паттерны для light (рус/англ + корни слов)
 LIGHT_PATTERNS = {
-    "тень": [
-        "full shade", "shade", "тень", "без прямого", "indirect", "diffused"
-    ],
-    "полутень": [
-        "part shade", "partial", "полутень", "рассеян", "утреннее", "непрям"
-    ],
-    "яркий": [
-        "full sun", "sun", "прямое солнце", "яркий", "солнеч"
-    ],
+    "тень": ["full shade", "shade", "тень", "без прямого", "indirect", "diffused"],
+    "полутень": ["part shade", "partial", "полутень", "рассеян", "утреннее", "непрям"],
+    "яркий": ["full sun", "sun", "прямое солнце", "яркий", "солнеч"],
 }
 
 @app.get("/plants", dependencies=[Depends(verify_api_key)])
 def get_plants(
-    view: Optional[str] = Query(None, description="Название вида"),
-    light: Optional[Literal["тень", "полутень", "яркий"]] = Query(
-        None, description="Освещение"
+    search_field: Optional[Literal["view", "cultivar"]] = Query(
+        "view", description="Поле поиска: view (вид) или cultivar (сорт)"
     ),
-    beginner_friendly: Optional[Literal["да", "нет"]] = Query(
-        None, description="Подходит новичкам"
-    ),
-    toxicity: Optional[Literal["нет", "умеренно", "токсично"]] = Query(
-        None, description="Токсичность"
-    ),
+    query_text: Optional[str] = Query(None, description="Текст для поиска по выбранному полю"),
+    light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None, description="Освещение"),
+    beginner_friendly: Optional[Literal["да", "нет"]] = Query(None, description="Подходит новичкам"),
+    toxicity: Optional[Literal["нет", "умеренно", "токсично"]] = Query(None, description="Токсичность"),
     temperature: Optional[str] = Query(None, description="Диапазон, напр. 18-25"),
     ru_regions: Optional[str] = Query(None, description="RU-MOW|RU-KDA и т.п."),
     indoor: Optional[Literal["true", "false"]] = Query(None, description="Комнатное"),
@@ -72,12 +63,15 @@ def get_plants(
     query = "SELECT * FROM plants WHERE 1=1"
     params: dict = {}
 
-    # view
-    if view:
-        query += " AND LOWER(view) LIKE :view"
-        params["view"] = f"%{view.lower()}%"
+    # 🔍 Поиск по выбранному полю
+    if query_text:
+        if search_field == "view":
+            query += " AND LOWER(view) LIKE :q"
+        elif search_field == "cultivar":
+            query += " AND LOWER(cultivar) LIKE :q"
+        params["q"] = f"%{query_text.lower()}%"
 
-    # light — OR по нескольким паттернам (рус/англ)
+    # 💡 Light
     if light:
         pats = LIGHT_PATTERNS.get(light, [])
         if pats:
@@ -88,20 +82,19 @@ def get_plants(
                 params[key] = f"%{pat.lower()}%"
             query += " AND (" + " OR ".join(clauses) + ")"
 
-    # beginner_friendly
+    # 🌱 Beginner friendly
     if beginner_friendly:
         query += " AND beginner_friendly = :bf"
         params["bf"] = (beginner_friendly == "да")
 
-    # toxicity
+    # ☠️ Toxicity
     if toxicity:
         tox_map = {"нет": "none", "умеренно": "mild", "токсично": "toxic"}
         query += " AND LOWER(toxicity) = :tox"
         params["tox"] = tox_map[toxicity]
 
-    # temperature — нормализованный LIKE
+    # 🌡 Temperature
     if temperature:
-        # нормализуем ввод как в SQL-нормализации
         t = (
             temperature.lower()
             .replace("°", "")
@@ -113,12 +106,12 @@ def get_plants(
         query += f" AND {norm_temp_sql('temperature')} LIKE :temp"
         params["temp"] = f"%{t}%"
 
-    # ru_regions
+    # 🌍 Regions
     if ru_regions:
         query += " AND LOWER(ru_regions) LIKE :region"
         params["region"] = f"%{ru_regions.lower()}%"
 
-    # indoor / outdoor
+    # 🏡 Indoor/Outdoor
     if indoor:
         query += " AND indoor = :indoor"
         params["indoor"] = (indoor == "true")
@@ -126,7 +119,7 @@ def get_plants(
         query += " AND outdoor = :outdoor"
         params["outdoor"] = (outdoor == "true")
 
-    # сортировка + пагинация
+    # 📋 Сортировка и пагинация
     query += " ORDER BY id"
     offset = (page - 1) * limit
     query += " LIMIT :limit OFFSET :offset"
@@ -142,7 +135,9 @@ def get_plants(
 @app.get("/plant/{plant_id}", dependencies=[Depends(verify_api_key)])
 def get_plant(plant_id: int):
     with engine.connect() as connection:
-        row = connection.execute(text("SELECT * FROM plants WHERE id = :id"), {"id": plant_id}).fetchone()
+        row = connection.execute(
+            text("SELECT * FROM plants WHERE id = :id"), {"id": plant_id}
+        ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Plant not found")
     return dict(row._mapping)
@@ -150,7 +145,9 @@ def get_plant(plant_id: int):
 @app.get("/stats", dependencies=[Depends(verify_api_key)])
 def get_stats():
     with engine.connect() as connection:
-        row = connection.execute(text("""
+        row = connection.execute(
+            text(
+                """
             SELECT 
                 COUNT(*) AS total,
                 COUNT(DISTINCT view) AS unique_views,
@@ -158,21 +155,23 @@ def get_stats():
                 SUM(CASE WHEN toxicity = 'toxic' THEN 1 ELSE 0 END) AS toxic_count,
                 SUM(CASE WHEN beginner_friendly = true THEN 1 ELSE 0 END) AS beginner_friendly_count
             FROM plants;
-        """)).fetchone()
+        """
+            )
+        ).fetchone()
     return dict(row._mapping)
 
 @app.get("/health", dependencies=[Depends(verify_api_key)])
 def health_check():
     return {"status": "ok"}
 
-# Swagger с X-API-Key
+# 📘 Swagger с X-API-Key
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="1.3.0",
-        description="Фиксированные фильтры, нормализация light/temperature, защита по X-API-Key",
+        version="1.4.0",
+        description="Добавлен выбор поля поиска (view/cultivar), фиксированные фильтры, защита X-API-Key",
         routes=app.routes,
     )
     schema.setdefault("components", {}).setdefault("securitySchemes", {})
