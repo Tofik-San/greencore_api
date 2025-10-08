@@ -46,7 +46,10 @@ LIGHT_PATTERNS = {
 
 @app.get("/plants", dependencies=[Depends(verify_api_key)])
 def get_plants(
-    view: Optional[str] = Query(None, description="Название вида растения"),
+    search_field: Optional[Literal["view", "cultivar"]] = Query(
+        "view", description="Выбор поля для поиска: view (вид) или cultivar (сорт)"
+    ),
+    view: Optional[str] = Query(None, description="Название вида или сорта растения"),
     light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None, description="Освещённость"),
     temperature: Optional[str] = Query(None, description="Температурный диапазон (например 18–25)"),
     toxicity: Optional[Literal["нет", "умеренно", "токсично"]] = Query(None, description="Токсичность"),
@@ -57,9 +60,12 @@ def get_plants(
     query = "SELECT * FROM plants WHERE 1=1"
     params: dict = {}
 
-    # 🌿 View
+    # 🌿 Поиск по виду или сорту
     if view:
-        query += " AND LOWER(view) LIKE :view"
+        if search_field == "view":
+            query += " AND LOWER(view) LIKE :view"
+        elif search_field == "cultivar":
+            query += " AND LOWER(cultivar) LIKE :view"
         params["view"] = f"%{view.lower()}%"
 
     # 💡 Light
@@ -152,8 +158,8 @@ def custom_openapi():
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="1.5.0",
-        description="Основные фильтры (view, light, temperature, toxicity, beginner_friendly, placement)",
+        version="1.6.1",
+        description="Выбор поля поиска (view/cultivar) + основные фильтры: light, temperature, toxicity, beginner_friendly, placement",
         routes=app.routes,
     )
     schema.setdefault("components", {}).setdefault("securitySchemes", {})
