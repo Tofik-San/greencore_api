@@ -13,40 +13,46 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 app = FastAPI()
 
-# CORS
+# CORS — ограничить потом на релизе
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # на прод — заменить на домен
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# DB connection
 engine = create_engine(DATABASE_URL)
 
-# 🔐 API-ключ
+# 🔐 Проверка ключа
 def verify_api_key(x_api_key: Optional[str] = Header(None)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Forbidden: Invalid API Key")
 
-# 🌐 Синонимы
-light_synonyms = {
-    "shade": ["тень", "полутень", "рассеянный", "рассеянный свет"],
-    "sun": ["солнце", "полное солнце", "солнечно", "яркий свет", "прямое солнце"],
-    "partial": ["частичное солнце", "частичное освещение", "утреннее солнце"]
+# 🌗 Синонимы
+synonyms = {
+    "light": {
+        "shade": ["тень", "полутень", "рассеянный", "рассеянный свет"],
+        "sun": ["солнце", "полное солнце", "солнечно", "яркий свет", "прямое солнце"],
+        "partial": ["частичное солнце", "частичное освещение", "утреннее солнце"]
+    },
+    "toxicity": {
+        "none": ["нет", "безвредно", "не токсично", "нетоксично"],
+        "mild": ["умеренно", "умеренно токсичен"],
+        "toxic": ["ядовито", "токсично", "опасно"]
+    },
+    "beginner_friendly": {
+        "true": ["да", "true", "yes"],
+        "false": ["нет", "false", "no"]
+    }
 }
 
-toxicity_synonyms = {
-    "none": ["нет", "безвредно", "не токсично", "нетоксично", "none"],
-    "mild": ["умеренно", "умеренно токсичен", "mild"],
-    "toxic": ["ядовито", "токсично", "опасно"]
-}
-
-beginner_synonyms = {
-    "true": ["да", "true", "yes"],
-    "false": ["нет", "false", "no"]
-}
+def match_synonym(value: str, group: str):
+    """Возвращает нормализованное значение по словарю синонимов"""
+    for key, words in synonyms.get(group, {}).items():
+        if value.lower() in words or value.lower() == key:
+            return key
+    return None
 
 @app.get("/plants", dependencies=[Depends(verify_api_key)])
 def get_plants(
@@ -54,47 +60,61 @@ def get_plants(
     light: Optional[str] = Query(None),
     beginner_friendly: Optional[str] = Query(None),
     toxicity: Optional[str] = Query(None),
+    temperature: Optional[str] = Query(None),
+    ru_regions: Optional[str] = Query(None),
+    indoor: Optional[str] = Query(None),
+    outdoor: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=100)
 ):
     query = "SELECT * FROM plants WHERE 1=1"
     params = {}
 
+    # 🔍 View
     if view:
         query += " AND LOWER(view) LIKE :view"
         params["view"] = f"%{view.lower()}%"
 
+    # 💡 Light
     if light:
-        matched_lights = []
-        for key, synonyms in light_synonyms.items():
-            if light.lower() in synonyms or light.lower() == key:
-                matched_lights.append(key)
-        if matched_lights:
-            query += " AND (" + " OR ".join(
-                [f"LOWER(light) LIKE :light_{i}" for i in range(len(matched_lights))]
-            ) + ")"
-            for i, val in enumerate(matched_lights):
-                params[f"light_{i}"] = f"%{val}%"
+        matched = match_synonym(light, "light")
+        if matched:
+            query += " AND LOWER(light) LIKE :light"
+            params["light"] = f"%{matched}%"
 
+    # 🌱 Beginner
     if beginner_friendly:
-        for key, synonyms in beginner_synonyms.items():
-            if beginner_friendly.lower() in synonyms:
-                query += " AND beginner_friendly = :beginner_friendly"
-                params["beginner_friendly"] = key == "true"
-                break
+        matched = match_synonym(beginner_friendly, "beginner_friendly")
+        if matched:
+            query += " AND beginner_friendly = :beginner"
+            params["beginner"] = matched == "true"
 
+    # ☠️ Toxicity
     if toxicity:
-        matched_tox = []
-        for key, synonyms in toxicity_synonyms.items():
-            if toxicity.lower() in synonyms or toxicity.lower() == key:
-                matched_tox.append(key)
-        if matched_tox:
-            query += " AND (" + " OR ".join(
-                [f"LOWER(toxicity) = :tox_{i}" for i in range(len(matched_tox))]
-            ) + ")"
-            for i, val in enumerate(matched_tox):
-                params[f"tox_{i}"] = val.lower()
+        matched = match_synonym(toxicity, "toxicity")
+        if matched:
+            query += " AND LOWER(toxicity) = :tox"
+            params["tox"] = matched
 
+    # 🌡 Temperature
+    if temperature:
+        query += " AND LOWER(temperature) LIKE :temp"
+        params["temp"] = f"%{temperature.lower()}%"
+
+    # 🌍 Regions
+    if ru_regions:
+        query += " AND LOWER(ru_regions) LIKE :region"
+        params["region"] = f"%{ru_regions.lower()}%"
+
+    # 🏡 Indoor/Outdoor
+    if indoor:
+        query += " AND indoor = :indoor"
+        params["indoor"] = indoor.lower() == "true"
+    if outdoor:
+        query += " AND outdoor = :outdoor"
+        params["outdoor"] = outdoor.lower() == "true"
+
+    query += " ORDER BY id"
     offset = (page - 1) * limit
     query += " LIMIT :limit OFFSET :offset"
     params["limit"] = limit
@@ -111,6 +131,15 @@ def get_plants(
         "results": plants
     }
 
+@app.get("/plant/{plant_id}", dependencies=[Depends(verify_api_key)])
+def get_plant(plant_id: int):
+    """Детальная карточка по ID"""
+    with engine.connect() as connection:
+        result = connection.execute(text("SELECT * FROM plants WHERE id = :id"), {"id": plant_id}).fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Plant not found")
+    return dict(result._mapping)
+
 @app.get("/health", dependencies=[Depends(verify_api_key)])
 def health_check():
     return {"status": "ok"}
@@ -119,30 +148,22 @@ def health_check():
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
-
-    openapi_schema = get_openapi(
+    schema = get_openapi(
         title="GreenCore API",
-        version="1.0.0",
-        description="API для доступа к базе растений с защитой по X-API-Key",
+        version="1.1.0",
+        description="API для доступа к базе растений с расширенными фильтрами и защитой по X-API-Key",
         routes=app.routes,
     )
-
-    if "components" not in openapi_schema:
-        openapi_schema["components"] = {}
-    if "securitySchemes" not in openapi_schema["components"]:
-        openapi_schema["components"]["securitySchemes"] = {}
-
-    openapi_schema["components"]["securitySchemes"]["APIKeyHeader"] = {
+    schema.setdefault("components", {}).setdefault("securitySchemes", {})
+    schema["components"]["securitySchemes"]["APIKeyHeader"] = {
         "type": "apiKey",
         "in": "header",
         "name": "X-API-Key"
     }
-
-    for path in openapi_schema["paths"]:
-        for method in openapi_schema["paths"][path]:
-            openapi_schema["paths"][path][method]["security"] = [{"APIKeyHeader": []}]
-
-    app.openapi_schema = openapi_schema
+    for path in schema["paths"]:
+        for method in schema["paths"][path]:
+            schema["paths"][path][method]["security"] = [{"APIKeyHeader": []}]
+    app.openapi_schema = schema
     return app.openapi_schema
 
 app.openapi = custom_openapi
