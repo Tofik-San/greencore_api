@@ -94,10 +94,34 @@ async def verify_key(request: Request, call_next):
     allowed_filters = to_list(row.allowed_filters)
     allowed_fields = to_list(row.allowed_fields)
 
+    # 🔧 Fallback для FREE-плана (обновлённая логика)
+    if row.plan_name == "free":
+        allowed_filters = ["view", "light", "placement"]
+        allowed_fields = ["view", "family", "cultivar", "insights", "light", "placement"]
+
+    # 🔧 Fallback для PREMIUM
+    elif row.plan_name == "premium" and (not allowed_fields or not allowed_filters):
+        allowed_filters = ["view", "light", "placement", "temperature", "toxicity"]
+        allowed_fields = [
+            "view", "family", "cultivar", "insights", "light", "watering", 
+            "temperature", "soil", "fertilizer", "placement"
+        ]
+
+    # 🔧 Fallback для SUPREME
+    elif row.plan_name == "supreme" and (not allowed_fields or not allowed_filters):
+        allowed_filters = ["view", "light", "placement", "temperature", "toxicity", "beginner_friendly"]
+        allowed_fields = [
+            "view", "family", "cultivar", "insights", "light", "watering", "temperature",
+            "soil", "fertilizer", "pruning", "pests_diseases", "toxicity", 
+            "beginner_friendly", "placement", "ru_regions"
+        ]
+
+    # Проверка разрешённых фильтров
     for q in request.query_params.keys():
         if q not in allowed_filters and q not in ("limit", "offset", "page", "search_field"):
             raise HTTPException(status_code=400, detail=f"Filter '{q}' not allowed for your plan")
 
+    # Сохраняем данные в state
     request.state.plan_name = row.plan_name
     request.state.allowed_filters = allowed_filters
     request.state.allowed_fields = allowed_fields
