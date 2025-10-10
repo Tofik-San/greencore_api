@@ -7,7 +7,6 @@ from datetime import datetime
 from typing import Optional, Literal
 from fastapi.openapi.utils import get_openapi
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from fastapi.exception_handlers import request_validation_exception_handler
 
 # ✅ Загрузка .env
@@ -15,7 +14,7 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 MASTER_KEY = os.getenv("MASTER_KEY")
 
-app = FastAPI(title="GreenCore API", version="1.7.2")
+app = FastAPI(title="GreenCore API", version="1.8.0")
 
 # 🌐 CORS
 app.add_middleware(
@@ -94,7 +93,7 @@ async def verify_key(request: Request, call_next):
     allowed_filters = to_list(row.allowed_filters)
     allowed_fields = to_list(row.allowed_fields)
 
-    # 🔧 Fallback для FREE-плана (обновлённая логика)
+    # 🔧 Fallback для FREE
     if row.plan_name == "free":
         allowed_filters = ["view", "light", "placement"]
         allowed_fields = ["view", "family", "cultivar", "insights", "light", "placement"]
@@ -103,7 +102,7 @@ async def verify_key(request: Request, call_next):
     elif row.plan_name == "premium" and (not allowed_fields or not allowed_filters):
         allowed_filters = ["view", "light", "placement", "temperature", "toxicity"]
         allowed_fields = [
-            "view", "family", "cultivar", "insights", "light", "watering", 
+            "view", "family", "cultivar", "insights", "light", "watering",
             "temperature", "soil", "fertilizer", "placement"
         ]
 
@@ -112,13 +111,13 @@ async def verify_key(request: Request, call_next):
         allowed_filters = ["view", "light", "placement", "temperature", "toxicity", "beginner_friendly"]
         allowed_fields = [
             "view", "family", "cultivar", "insights", "light", "watering", "temperature",
-            "soil", "fertilizer", "pruning", "pests_diseases", "toxicity", 
+            "soil", "fertilizer", "pruning", "pests_diseases", "toxicity",
             "beginner_friendly", "placement", "ru_regions"
         ]
 
     # Проверка разрешённых фильтров
     for q in request.query_params.keys():
-        if q not in allowed_filters and q not in ("limit", "offset", "page", "search_field"):
+        if q not in allowed_filters and q not in ("limit", "offset", "page", "search_field", "sort"):
             raise HTTPException(status_code=400, detail=f"Filter '{q}' not allowed for your plan")
 
     # Сохраняем данные в state
@@ -151,6 +150,7 @@ def get_plants(
     toxicity: Optional[Literal["нет", "умеренно", "токсично"]] = Query(None),
     beginner_friendly: Optional[Literal["да", "нет"]] = Query(None),
     placement: Optional[Literal["комнатное", "садовое"]] = Query(None),
+    sort: Optional[Literal["id", "name", "random"]] = Query("id"),
     limit: int = Query(20, ge=1, le=100)
 ):
     limit = clamp_limit(request, limit)
@@ -193,7 +193,15 @@ def get_plants(
         elif placement == "садовое":
             query += " AND outdoor = true"
 
-    query += " ORDER BY id LIMIT :limit"
+    # 🔀 сортировка (новая логика)
+    if sort == "random":
+        query += " ORDER BY RANDOM()"
+    elif sort == "name":
+        query += " ORDER BY view"
+    else:
+        query += " ORDER BY id"
+
+    query += " LIMIT :limit"
     params["limit"] = limit
 
     with engine.connect() as conn:
@@ -211,16 +219,27 @@ def generate_api_key(x_api_key: str = Header(...), plan: str = "free", owner: st
 
     new_key = secrets.token_hex(32)
     with engine.begin() as conn:
-        plan_row = conn.execute(text("SELECT id FROM plans WHERE name = :p"), {"p": plan}).fetchone()
+        plan_row = conn.execute(
+            text("SELECT id, limit_total, max_page FROM plans WHERE name = :p"), {"p": plan}
+        ).fetchone()
+
         if not plan_row:
             raise HTTPException(status_code=400, detail="Invalid plan name")
 
         conn.execute(text("""
-            INSERT INTO api_keys (api_key, owner, active, created_at, expires_at, requests, plan_id)
-            VALUES (:k, :o, TRUE, NOW(), NOW() + INTERVAL '90 days', 0, :pid)
-        """), {"k": new_key, "o": owner, "pid": plan_row.id})
+            INSERT INTO api_keys (api_key, owner, active, created_at, expires_at, 
+                                  requests, plan_id, limit_total, max_page)
+            VALUES (:k, :o, TRUE, NOW(), NOW() + INTERVAL '90 days', 0, 
+                    :pid, :limit_total, :max_page)
+        """), {
+            "k": new_key,
+            "o": owner,
+            "pid": plan_row.id,
+            "limit_total": plan_row.limit_total,
+            "max_page": plan_row.max_page
+        })
 
-    return {"api_key": new_key, "plan": plan, "expires_in_days": 90}
+    return {"api_key": new_key, "plan": plan, "limit_total": plan_row.limit_total, "max_page": plan_row.max_page, "expires_in_days": 90}
 
 
 @app.get("/health")
@@ -244,7 +263,7 @@ async def log_requests(request, call_next):
     logging.info(f"{request.client.host} | {request.method} {request.url.path} | {response.status_code} | {duration:.2f}s")
     return response
 
-# ✅ ------------------ OPENAPI (Authorize + schemas fix) ------------------
+# ✅ ------------------ OPENAPI ------------------
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request, exc):
@@ -256,8 +275,8 @@ def custom_openapi():
 
     schema = get_openapi(
         title="GreenCore API",
-        version="1.7.2",
-        description="API с системой тарифов и авторизацией по ключу.",
+        version="1.8.0",
+        description="API с системой тарифов, авторизацией и сортировкой.",
         routes=app.routes,
     )
 
