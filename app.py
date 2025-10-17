@@ -4,29 +4,32 @@ from fastapi.security.api_key import APIKeyHeader
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 from typing import Optional
+from dotenv import load_dotenv
 import os
+
+# --- загрузка переменных окружения ---
+load_dotenv()
 
 # --- базовая инициализация приложения ---
 app = FastAPI(
     title="GreenCore API",
     description="API для работы с базой растений GreenCore",
-    version="1.8"
+    version="1.9"
 )
 
-# --- CORS: разрешаем только твой фронт и localhost ---
+# --- CORS: берём разрешённые источники из .env ---
+origins = os.getenv("CORS_ORIGINS", "").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://web-production-93a9e.up.railway.app",  # фронт на Railway
-        "http://localhost:3000"                         # локальная отладка
-    ],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- API key middleware (если используется) ---
-API_KEY_NAME = "x-api-key"
+# --- API key middleware ---
+API_KEY_NAME = "X-API-Key"  # фикс регистра
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 async def verify_api_key(request: Request, api_key: Optional[str] = Depends(api_key_header)):
@@ -45,7 +48,7 @@ async def health_check():
 # --- Пример защищённого эндпоинта ---
 @app.get("/v1/plants", dependencies=[Depends(verify_api_key)])
 async def get_plants(limit: int = 10):
-    # пример фиктивных данных; здесь подключается твоя база PostgreSQL
+    # пример фиктивных данных; в реальности подключается база PostgreSQL
     data = [{"id": i, "name": f"Plant {i}"} for i in range(limit)]
     return {"count": len(data), "results": data}
 
