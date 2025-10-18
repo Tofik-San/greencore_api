@@ -41,9 +41,9 @@ def get_plants(
     view: Optional[str] = Query(None, description="Название вида или сорта растения"),
     light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None, description="Освещённость"),
     zone_usda: Optional[Literal[
-        "2–6", "3", "3–7", "3–8", "3–9", "4", "4–9", "5", "5–8",
-        "6", "6–9", "7", "7–9", "8", "8–10", "9", "9–12",
-        "10", "10–12", "11", "11–12", "12"
+        "3", "4", "5",
+        "6", "7", "8", "9",
+        "10", "11", "12"
     ]] = Query(None, description="Климатическая зона USDA (выберите из списка)"),
     placement: Optional[Literal["комнатное", "садовое"]] = Query(None, description="Тип размещения"),
     limit: int = Query(50, ge=1, le=100, description="Количество карточек в ответе"),
