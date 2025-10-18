@@ -90,10 +90,43 @@ def get_plants(
         params["temp"] = f"%{t}%"
 
     if zone_usda:
-        # нормализация тире и точное сопоставление нормализованной строки
-        z = zone_usda.replace("–", "-").replace("—", "-")
-        query += " AND REPLACE(REPLACE(filter_zone_usda, '–', '-'), '—', '-') = :zone"
-        params["zone"] = z
+    z_input = zone_usda.replace("–", "-").replace("—", "-").strip()
+
+    # Если введён диапазон, проверяем пересечение
+    if "-" in z_input:
+        try:
+            zmin, zmax = [int(x) for x in z_input.split("-")]
+            query += """
+                AND (
+                    REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') = :exact
+                    OR (
+                        SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',1)::int <= :zmax
+                        AND SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',2)::int >= :zmin
+                    )
+                )
+            """
+            params.update({"exact": z_input, "zmin": zmin, "zmax": zmax})
+        except Exception:
+            query += " AND REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') LIKE :zone"
+            params["zone"] = f"%{z_input}%"
+    else:
+        # одиночное значение, например 6
+        try:
+            z = int(z_input)
+            query += """
+                AND (
+                    REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') LIKE :zone
+                    OR (
+                        SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',1)::int <= :z
+                        AND SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',2)::int >= :z
+                    )
+                )
+            """
+            params.update({"zone": f"%{z_input}%", "z": z})
+        except Exception:
+            query += " AND REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') LIKE :zone"
+            params["zone"] = f"%{z_input}%"
+
 
     if placement:
         if placement == "комнатное":
