@@ -22,7 +22,11 @@ origins = os.getenv("CORS_ORIGINS", "").split(",")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=[
+        "http://localhost:3000",  # локальный фронт
+        "https://web-production-93a9e.up.railway.app",  # задеплоенный LID
+        "https://web-production-310c7c7.up.railway.app"  # сам API (для тестов)
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
