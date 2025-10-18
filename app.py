@@ -8,7 +8,6 @@ from fastapi.openapi.utils import get_openapi
 import logging
 from datetime import datetime
 import secrets
-from sqlalchemy.exc import IntegrityError
 
 # ✅ Загрузка .env
 load_dotenv()
@@ -18,7 +17,7 @@ MASTER_KEY = os.getenv("MASTER_KEY")
 
 app = FastAPI()
 
-# 🌐 CORS (на прод ограничить доменом)
+# 🌐 CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -37,36 +36,28 @@ def norm_temp_sql(field: str = "temperature") -> str:
         ")"
     )
 
-# 💡 Паттерны освещённости (рус/англ)
+# 💡 Паттерны освещённости
 LIGHT_PATTERNS = {
     "тень": ["full shade", "shade", "тень", "indirect", "diffused"],
     "полутень": ["part shade", "partial", "полутень", "рассеян", "утреннее"],
     "яркий": ["full sun", "sun", "прямое солнце", "яркий", "солнеч"],
 }
 
-# 🌿 Главный эндпоинт растений
+# 🌿 Главный эндпоинт
 @app.get("/plants")
 def get_plants(
-    search_field: Optional[Literal["view", "cultivar"]] = Query(
-        "view", description="Выбор поля для поиска: view (вид) или cultivar (сорт)"
-    ),
     view: Optional[str] = Query(None, description="Название вида или сорта растения"),
     light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None, description="Освещённость"),
     temperature: Optional[str] = Query(None, description="Температурный диапазон (например 18–25)"),
-    toxicity: Optional[Literal["нет", "умеренно", "токсично"]] = Query(None, description="Токсичность"),
-    beginner_friendly: Optional[Literal["да", "нет"]] = Query(None, description="Подходит новичкам"),
-    placement: Optional[Literal["комнатное", "садовое"]] = Query(None, description="Тип размещения"),
     zone_usda: Optional[str] = Query(None, description="Климатическая зона USDA (например 3, 6–9, 10–12)"),
-    limit: int = Query(50, ge=1, le=100, description="Количество карточек в ответе (по умолчанию 50)"),
+    placement: Optional[Literal["комнатное", "садовое"]] = Query(None, description="Тип размещения"),
+    limit: int = Query(50, ge=1, le=100, description="Количество карточек в ответе"),
 ):
     query = "SELECT * FROM plants WHERE 1=1"
     params: dict = {}
 
     if view:
-        if search_field == "view":
-            query += " AND LOWER(view) LIKE :view"
-        elif search_field == "cultivar":
-            query += " AND LOWER(cultivar) LIKE :view"
+        query += " AND (LOWER(view) LIKE :view OR LOWER(cultivar) LIKE :view)"
         params["view"] = f"%{view.lower()}%"
 
     if light:
@@ -91,24 +82,15 @@ def get_plants(
         query += f" AND {norm_temp_sql('temperature')} LIKE :temp"
         params["temp"] = f"%{t}%"
 
-    if toxicity:
-        tox_map = {"нет": "none", "умеренно": "mild", "токсично": "toxic"}
-        query += " AND LOWER(toxicity) = :tox"
-        params["tox"] = tox_map[toxicity]
-
-    if beginner_friendly:
-        query += " AND beginner_friendly = :bf"
-        params["bf"] = (beginner_friendly == "да")
+    if zone_usda:
+        query += " AND filter_zone_usda LIKE :zone"
+        params["zone"] = f"%{zone_usda}%"
 
     if placement:
         if placement == "комнатное":
             query += " AND indoor = true"
         elif placement == "садовое":
             query += " AND outdoor = true"
-
-    if zone_usda:
-        query += " AND filter_zone_usda LIKE :zone"
-        params["zone"] = f"%{zone_usda}%"
 
     query += " ORDER BY id LIMIT :limit"
     params["limit"] = limit
@@ -155,8 +137,7 @@ def health_check():
     return {"status": "ok"}
 
 
-# ✅ ----------------------- ЛОГИРОВАНИЕ -----------------------
-
+# ✅ Логирование
 logging.basicConfig(
     filename="greencore_requests.log",
     level=logging.INFO,
@@ -178,7 +159,6 @@ async def log_requests(request, call_next):
     logging.info(log_line)
     return response
 
-# ✅ ----------------------------------------------------------
 
 # 📘 Swagger
 def custom_openapi():
@@ -186,8 +166,8 @@ def custom_openapi():
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="1.6.4",
-        description="Фильтр zone_usda добавлен. Единая система API-ключей (через БД), старый API_KEY удалён.",
+        version="1.6.5",
+        description="Минимизированная версия фильтров. Остальные доступны в advanced API.",
         routes=app.routes,
     )
     schema.setdefault("components", {}).setdefault("securitySchemes", {})
@@ -204,8 +184,8 @@ def custom_openapi():
 
 app.openapi = custom_openapi
 
-# ✅ ----------------------- API KEYS SYSTEM -----------------------
 
+# ✅ API KEYS SYSTEM
 @app.post("/generate_key")
 def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"):
     if x_api_key != MASTER_KEY:
@@ -265,5 +245,3 @@ async def verify_dynamic_api_key(request, call_next):
         )
 
     return response
-
-# ✅ --------------------------------------------------------------
