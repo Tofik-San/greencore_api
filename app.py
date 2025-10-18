@@ -28,7 +28,7 @@ app.add_middleware(
 
 engine = create_engine(DATABASE_URL)
 
-# 🌡 Нормализация temperature
+# 🌡 Нормализация temperature (оставлено для случая, когда zone_usda не задан)
 def norm_temp_sql(field: str = "temperature") -> str:
     return (
         "LOWER("
@@ -48,8 +48,14 @@ LIGHT_PATTERNS = {
 def get_plants(
     view: Optional[str] = Query(None, description="Название вида или сорта растения"),
     light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None, description="Освещённость"),
+    # temperature применяется ТОЛЬКО если zone_usda не задан
     temperature: Optional[str] = Query(None, description="Температурный диапазон (например 18–25)"),
-    zone_usda: Optional[str] = Query(None, description="Климатическая зона USDA (например 3, 6–9, 10–12)"),
+    zone_usda: Optional[Literal[
+        # диапазоны и одиночные значения, встречающиеся в базе
+        "2–6", "3", "3–7", "3–8", "3–9", "4", "4–9", "5", "5–8",
+        "6", "6–9", "7", "7–9", "8", "8–10", "9", "9–12",
+        "10", "10–12", "11", "11–12", "12"
+    ]] = Query(None, description="Климатическая зона USDA (выберите из списка)"),
     placement: Optional[Literal["комнатное", "садовое"]] = Query(None, description="Тип размещения"),
     limit: int = Query(50, ge=1, le=100, description="Количество карточек в ответе"),
 ):
@@ -70,7 +76,8 @@ def get_plants(
                 params[key] = f"%{pat.lower()}%"
             query += " AND (" + " OR ".join(clauses) + ")"
 
-    if temperature:
+    # ❗ температура игнорируется, если выбран zone_usda
+    if temperature and not zone_usda:
         t = (
             temperature.lower()
             .replace("°", "")
@@ -83,9 +90,10 @@ def get_plants(
         params["temp"] = f"%{t}%"
 
     if zone_usda:
-        zone_usda = zone_usda.replace("–", "-").replace("—", "-")
-        query += " AND REPLACE(REPLACE(filter_zone_usda, '–', '-'), '—', '-') LIKE :zone"
-        params["zone"] = f"%{zone_usda}%"
+        # нормализация тире и точное сопоставление нормализованной строки
+        z = zone_usda.replace("–", "-").replace("—", "-")
+        query += " AND REPLACE(REPLACE(filter_zone_usda, '–', '-'), '—', '-') = :zone"
+        params["zone"] = z
 
     if placement:
         if placement == "комнатное":
@@ -167,8 +175,8 @@ def custom_openapi():
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="1.6.7",
-        description="Добавлена нормализация zone_usda для всех типов тире (–, —, -).",
+        version="1.6.8",
+        description="USDA как enum + игнор temperature при выбранном USDA.",
         routes=app.routes,
     )
     schema.setdefault("components", {}).setdefault("securitySchemes", {})
