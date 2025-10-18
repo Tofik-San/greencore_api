@@ -56,6 +56,7 @@ def get_plants(
     toxicity: Optional[Literal["нет", "умеренно", "токсично"]] = Query(None, description="Токсичность"),
     beginner_friendly: Optional[Literal["да", "нет"]] = Query(None, description="Подходит новичкам"),
     placement: Optional[Literal["комнатное", "садовое"]] = Query(None, description="Тип размещения"),
+    zone_usda: Optional[str] = Query(None, description="Климатическая зона USDA (например 3, 6–9, 10–12)"),
     limit: int = Query(50, ge=1, le=100, description="Количество карточек в ответе (по умолчанию 50)"),
 ):
     query = "SELECT * FROM plants WHERE 1=1"
@@ -104,6 +105,10 @@ def get_plants(
             query += " AND indoor = true"
         elif placement == "садовое":
             query += " AND outdoor = true"
+
+    if zone_usda:
+        query += " AND filter_zone_usda LIKE :zone"
+        params["zone"] = f"%{zone_usda}%"
 
     query += " ORDER BY id LIMIT :limit"
     params["limit"] = limit
@@ -181,8 +186,8 @@ def custom_openapi():
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="1.6.3",
-        description="Единая система API-ключей (через БД), старый API_KEY удалён.",
+        version="1.6.4",
+        description="Фильтр zone_usda добавлен. Единая система API-ключей (через БД), старый API_KEY удалён.",
         routes=app.routes,
     )
     schema.setdefault("components", {}).setdefault("securitySchemes", {})
