@@ -83,7 +83,8 @@ def get_plants(
         params["temp"] = f"%{t}%"
 
     if zone_usda:
-        query += " AND filter_zone_usda LIKE :zone"
+        zone_usda = zone_usda.replace("–", "-").replace("—", "-")
+        query += " AND REPLACE(REPLACE(filter_zone_usda, '–', '-'), '—', '-') LIKE :zone"
         params["zone"] = f"%{zone_usda}%"
 
     if placement:
@@ -166,8 +167,8 @@ def custom_openapi():
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="1.6.5",
-        description="Минимизированная версия фильтров. Остальные доступны в advanced API.",
+        version="1.6.7",
+        description="Добавлена нормализация zone_usda для всех типов тире (–, —, -).",
         routes=app.routes,
     )
     schema.setdefault("components", {}).setdefault("securitySchemes", {})
