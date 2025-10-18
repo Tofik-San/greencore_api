@@ -1,23 +1,24 @@
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
-import os, json, secrets, logging
-from datetime import datetime
+import os
 from typing import Optional, Literal
 from fastapi.openapi.utils import get_openapi
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from fastapi.exception_handlers import request_validation_exception_handler
+import logging
+from datetime import datetime
+import secrets
+from sqlalchemy.exc import IntegrityError
 
 # ✅ Загрузка .env
 load_dotenv()
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 MASTER_KEY = os.getenv("MASTER_KEY")
 
-app = FastAPI(title="GreenCore API", version="1.7.2")
+app = FastAPI()
 
-# 🌐 CORS
+# 🌐 CORS (на прод ограничить доменом)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,116 +29,44 @@ app.add_middleware(
 
 engine = create_engine(DATABASE_URL)
 
-# 🌡 нормализация temperature
-def norm_temp_sql(field="temperature"):
+# 🌡 Нормализация temperature
+def norm_temp_sql(field: str = "temperature") -> str:
     return (
         "LOWER("
         f"REPLACE(REPLACE(REPLACE(REPLACE(REPLACE({field}, '°', ''),'c',''),' ',''),'–','-'),'—','-')"
         ")"
     )
 
-# 💡 Паттерны освещённости
+# 💡 Паттерны освещённости (рус/англ)
 LIGHT_PATTERNS = {
     "тень": ["full shade", "shade", "тень", "indirect", "diffused"],
     "полутень": ["part shade", "partial", "полутень", "рассеян", "утреннее"],
     "яркий": ["full sun", "sun", "прямое солнце", "яркий", "солнеч"],
 }
 
-# ✅ ------------------ ХЕЛПЕРЫ ------------------
-
-def clamp_limit(request: Request, user_limit: int) -> int:
-    max_page = getattr(request.state, "max_page", None)
-    return min(user_limit, max_page) if max_page else user_limit
-
-def filter_fields(items, allowed):
-    allowed_set = set(allowed) if allowed else None
-    if not allowed_set:
-        return list(items)
-    return [{k: v for k, v in it.items() if k in allowed_set} for it in items]
-
-# ✅ ------------------ MIDDLEWARE ------------------
-
-@app.middleware("http")
-async def verify_key(request: Request, call_next):
-    open_paths = ("/docs", "/openapi.json", "/health", "/generate_key")
-    if any(request.url.path.startswith(p) for p in open_paths):
-        return await call_next(request)
-
-    api_key = request.headers.get("X-API-Key")
-    if not api_key:
-        raise HTTPException(status_code=401, detail="Missing API key")
-
-    with engine.connect() as conn:
-        row = conn.execute(text("""
-            SELECT 
-                k.id, k.active, k.requests, k.limit_total, k.max_page,
-                p.name AS plan_name, p.allowed_filters, p.allowed_fields
-            FROM api_keys k
-            JOIN plans p ON p.id = k.plan_id
-            WHERE k.api_key = :key
-        """), {"key": api_key}).fetchone()
-
-    if not row or not row.active:
-        raise HTTPException(status_code=403, detail="Invalid or inactive key")
-
-    if row.requests >= row.limit_total:
-        raise HTTPException(status_code=402, detail="Request limit reached")
-
-    def to_list(v):
-        if isinstance(v, str):
-            try:
-                return json.loads(v)
-            except:
-                return []
-        return list(v) if v else []
-
-    allowed_filters = to_list(row.allowed_filters)
-    allowed_fields = to_list(row.allowed_fields)
-
-    for q in request.query_params.keys():
-        if q not in allowed_filters and q not in ("limit", "offset", "page", "search_field"):
-            raise HTTPException(status_code=400, detail=f"Filter '{q}' not allowed for your plan")
-
-    request.state.plan_name = row.plan_name
-    request.state.allowed_filters = allowed_filters
-    request.state.allowed_fields = allowed_fields
-    request.state.max_page = row.max_page
-    request.state.key_id = row.id
-
-    response = await call_next(request)
-
-    if response.status_code < 400:
-        with engine.begin() as conn:
-            conn.execute(
-                text("UPDATE api_keys SET requests = requests + 1 WHERE id = :id"),
-                {"id": request.state.key_id}
-            )
-
-    return response
-
-# ✅ ------------------ ЭНДПОИНТЫ ------------------
-
+# 🌿 Главный эндпоинт растений
 @app.get("/plants")
 def get_plants(
-    request: Request,
-    search_field: Optional[Literal["view", "cultivar"]] = Query("view"),
-    view: Optional[str] = Query(None),
-    light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None),
-    temperature: Optional[str] = Query(None),
-    toxicity: Optional[Literal["нет", "умеренно", "токсично"]] = Query(None),
-    beginner_friendly: Optional[Literal["да", "нет"]] = Query(None),
-    placement: Optional[Literal["комнатное", "садовое"]] = Query(None),
-    limit: int = Query(20, ge=1, le=100)
+    search_field: Optional[Literal["view", "cultivar"]] = Query(
+        "view", description="Выбор поля для поиска: view (вид) или cultivar (сорт)"
+    ),
+    view: Optional[str] = Query(None, description="Название вида или сорта растения"),
+    light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None, description="Освещённость"),
+    temperature: Optional[str] = Query(None, description="Температурный диапазон (например 18–25)"),
+    toxicity: Optional[Literal["нет", "умеренно", "токсично"]] = Query(None, description="Токсичность"),
+    beginner_friendly: Optional[Literal["да", "нет"]] = Query(None, description="Подходит новичкам"),
+    placement: Optional[Literal["комнатное", "садовое"]] = Query(None, description="Тип размещения"),
+    limit: int = Query(50, ge=1, le=100, description="Количество карточек в ответе (по умолчанию 50)"),
 ):
-    limit = clamp_limit(request, limit)
-
     query = "SELECT * FROM plants WHERE 1=1"
-    params = {}
+    params: dict = {}
 
     if view:
-        field = "view" if search_field == "view" else "cultivar"
-        query += f" AND LOWER({field}) LIKE :val"
-        params["val"] = f"%{view.lower()}%"
+        if search_field == "view":
+            query += " AND LOWER(view) LIKE :view"
+        elif search_field == "cultivar":
+            query += " AND LOWER(cultivar) LIKE :view"
+        params["view"] = f"%{view.lower()}%"
 
     if light:
         pats = LIGHT_PATTERNS.get(light, [])
@@ -150,7 +79,14 @@ def get_plants(
             query += " AND (" + " OR ".join(clauses) + ")"
 
     if temperature:
-        t = temperature.lower().replace("°", "").replace("c", "").replace(" ", "").replace("–", "-").replace("—", "-")
+        t = (
+            temperature.lower()
+            .replace("°", "")
+            .replace("c", "")
+            .replace(" ", "")
+            .replace("–", "-")
+            .replace("—", "-")
+        )
         query += f" AND {norm_temp_sql('temperature')} LIKE :temp"
         params["temp"] = f"%{t}%"
 
@@ -172,38 +108,49 @@ def get_plants(
     query += " ORDER BY id LIMIT :limit"
     params["limit"] = limit
 
-    with engine.connect() as conn:
-        result = conn.execute(text(query), params)
+    with engine.connect() as connection:
+        result = connection.execute(text(query), params)
         plants = [dict(row._mapping) for row in result]
 
-    plants = filter_fields(plants, request.state.allowed_fields)
     return {"count": len(plants), "limit": limit, "results": plants}
 
 
-@app.post("/generate_key")
-def generate_api_key(x_api_key: str = Header(...), plan: str = "free", owner: str = "user"):
-    if x_api_key != MASTER_KEY:
-        raise HTTPException(status_code=403, detail="Access denied: admin key required")
+@app.get("/plant/{plant_id}")
+def get_plant(plant_id: int):
+    with engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT * FROM plants WHERE id = :id"), {"id": plant_id}
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Plant not found")
+    return dict(row._mapping)
 
-    new_key = secrets.token_hex(32)
-    with engine.begin() as conn:
-        plan_row = conn.execute(text("SELECT id FROM plans WHERE name = :p"), {"p": plan}).fetchone()
-        if not plan_row:
-            raise HTTPException(status_code=400, detail="Invalid plan name")
 
-        conn.execute(text("""
-            INSERT INTO api_keys (api_key, owner, active, created_at, expires_at, requests, plan_id)
-            VALUES (:k, :o, TRUE, NOW(), NOW() + INTERVAL '90 days', 0, :pid)
-        """), {"k": new_key, "o": owner, "pid": plan_row.id})
-
-    return {"api_key": new_key, "plan": plan, "expires_in_days": 90}
+@app.get("/stats")
+def get_stats():
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                """
+            SELECT 
+                COUNT(*) AS total,
+                COUNT(DISTINCT view) AS unique_views,
+                COUNT(DISTINCT family) AS unique_families,
+                SUM(CASE WHEN toxicity = 'toxic' THEN 1 ELSE 0 END) AS toxic_count,
+                SUM(CASE WHEN beginner_friendly = true THEN 1 ELSE 0 END) AS beginner_friendly_count
+            FROM plants;
+        """
+            )
+        ).fetchone()
+    return dict(row._mapping)
 
 
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
-# ✅ ------------------ ЛОГИРОВАНИЕ ------------------
+
+# ✅ ----------------------- ЛОГИРОВАНИЕ -----------------------
 
 logging.basicConfig(
     filename="greencore_requests.log",
@@ -214,56 +161,104 @@ logging.basicConfig(
 
 @app.middleware("http")
 async def log_requests(request, call_next):
-    start = datetime.now()
+    start_time = datetime.now()
     response = await call_next(request)
-    duration = (datetime.now() - start).total_seconds()
-    logging.info(f"{request.client.host} | {request.method} {request.url.path} | {response.status_code} | {duration:.2f}s")
+    duration = (datetime.now() - start_time).total_seconds()
+    log_line = (
+        f"{request.client.host} | {request.method} {request.url.path} "
+        f"| status {response.status_code} | time {duration:.2f}s"
+    )
+    if request.query_params:
+        log_line += f" | params: {dict(request.query_params)}"
+    logging.info(log_line)
     return response
 
-# ✅ ------------------ OPENAPI (Authorize + schemas fix) ------------------
+# ✅ ----------------------------------------------------------
 
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request, exc):
-    return await request_validation_exception_handler(request, exc)
-
+# 📘 Swagger
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
-
     schema = get_openapi(
         title="GreenCore API",
-        version="1.7.2",
-        description="API с системой тарифов и авторизацией по ключу.",
+        version="1.6.3",
+        description="Единая система API-ключей (через БД), старый API_KEY удалён.",
         routes=app.routes,
     )
-
-    schema["components"]["schemas"] = schema.get("components", {}).get("schemas", {})
-    schema["components"]["schemas"]["HTTPValidationError"] = {
-        "title": "HTTPValidationError",
-        "type": "object",
-        "properties": {
-            "detail": {"title": "Detail", "type": "array", "items": {"$ref": "#/components/schemas/ValidationError"}}
-        },
+    schema.setdefault("components", {}).setdefault("securitySchemes", {})
+    schema["components"]["securitySchemes"]["APIKeyHeader"] = {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
     }
-    schema["components"]["schemas"]["ValidationError"] = {
-        "title": "ValidationError",
-        "type": "object",
-        "properties": {
-            "loc": {"title": "Location", "type": "array", "items": {"type": "string"}},
-            "msg": {"title": "Message", "type": "string"},
-            "type": {"title": "Error Type", "type": "string"},
-        },
-    }
-
-    schema["components"]["securitySchemes"] = {
-        "APIKeyHeader": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
-    }
-
     for path in schema["paths"]:
         for method in schema["paths"][path]:
             schema["paths"][path][method]["security"] = [{"APIKeyHeader": []}]
-
     app.openapi_schema = schema
     return app.openapi_schema
 
 app.openapi = custom_openapi
+
+# ✅ ----------------------- API KEYS SYSTEM -----------------------
+
+@app.post("/generate_key")
+def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"):
+    if x_api_key != MASTER_KEY:
+        raise HTTPException(status_code=403, detail="Access denied: admin key required")
+
+    new_key = secrets.token_hex(32)
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id SERIAL PRIMARY KEY,
+                api_key TEXT UNIQUE NOT NULL,
+                owner TEXT,
+                active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT NOW(),
+                expires_at TIMESTAMP,
+                requests INT DEFAULT 0
+            );
+        """))
+
+        conn.execute(
+            text("""
+                INSERT INTO api_keys (api_key, owner, expires_at)
+                VALUES (:k, :o, NOW() + INTERVAL '90 days')
+            """),
+            {"k": new_key, "o": owner}
+        )
+
+    return {"api_key": new_key, "expires_in_days": 90}
+
+
+@app.middleware("http")
+async def verify_dynamic_api_key(request, call_next):
+    open_paths = ["/docs", "/openapi.json", "/health", "/generate_key"]
+    if any(request.url.path.startswith(p) for p in open_paths):
+        return await call_next(request)
+
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing API key")
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT active, expires_at FROM api_keys WHERE api_key = :key"),
+            {"key": api_key}
+        ).fetchone()
+
+    if not row or not row[0]:
+        raise HTTPException(status_code=403, detail="Invalid or inactive API key")
+
+    response = await call_next(request)
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE api_keys SET requests = requests + 1 WHERE api_key = :key"),
+            {"key": api_key}
+        )
+
+    return response
+
+# ✅ --------------------------------------------------------------
