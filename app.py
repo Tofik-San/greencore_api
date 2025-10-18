@@ -28,14 +28,6 @@ app.add_middleware(
 
 engine = create_engine(DATABASE_URL)
 
-# 🌡 Нормализация temperature (оставлено для случая, когда zone_usda не задан)
-def norm_temp_sql(field: str = "temperature") -> str:
-    return (
-        "LOWER("
-        f"REPLACE(REPLACE(REPLACE(REPLACE(REPLACE({field}, '°', ''),'c',''),' ',''),'–','-'),'—','-')"
-        ")"
-    )
-
 # 💡 Паттерны освещённости
 LIGHT_PATTERNS = {
     "тень": ["full shade", "shade", "тень", "indirect", "diffused"],
@@ -48,10 +40,7 @@ LIGHT_PATTERNS = {
 def get_plants(
     view: Optional[str] = Query(None, description="Название вида или сорта растения"),
     light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None, description="Освещённость"),
-    # temperature применяется ТОЛЬКО если zone_usda не задан
-    temperature: Optional[str] = Query(None, description="Температурный диапазон (например 18–25)"),
     zone_usda: Optional[Literal[
-        # диапазоны и одиночные значения, встречающиеся в базе
         "2–6", "3", "3–7", "3–8", "3–9", "4", "4–9", "5", "5–8",
         "6", "6–9", "7", "7–9", "8", "8–10", "9", "9–12",
         "10", "10–12", "11", "11–12", "12"
@@ -62,10 +51,12 @@ def get_plants(
     query = "SELECT * FROM plants WHERE 1=1"
     params: dict = {}
 
+    # поиск по названию вида/сорта
     if view:
         query += " AND (LOWER(view) LIKE :view OR LOWER(cultivar) LIKE :view)"
         params["view"] = f"%{view.lower()}%"
 
+    # фильтр по освещённости
     if light:
         pats = LIGHT_PATTERNS.get(light, [])
         if pats:
@@ -76,58 +67,44 @@ def get_plants(
                 params[key] = f"%{pat.lower()}%"
             query += " AND (" + " OR ".join(clauses) + ")"
 
-    # ❗ температура игнорируется, если выбран zone_usda
-    if temperature and not zone_usda:
-        t = (
-            temperature.lower()
-            .replace("°", "")
-            .replace("c", "")
-            .replace(" ", "")
-            .replace("–", "-")
-            .replace("—", "-")
-        )
-        query += f" AND {norm_temp_sql('temperature')} LIKE :temp"
-        params["temp"] = f"%{t}%"
-
+    # фильтр USDA (понимает диапазоны и одиночные значения)
     if zone_usda:
-    z_input = zone_usda.replace("–", "-").replace("—", "-").strip()
+        z_input = zone_usda.replace("–", "-").replace("—", "-").strip()
 
-    # Если введён диапазон, проверяем пересечение
-    if "-" in z_input:
-        try:
-            zmin, zmax = [int(x) for x in z_input.split("-")]
-            query += """
-                AND (
-                    REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') = :exact
-                    OR (
-                        SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',1)::int <= :zmax
-                        AND SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',2)::int >= :zmin
+        if "-" in z_input:
+            try:
+                zmin, zmax = [int(x) for x in z_input.split("-")]
+                query += """
+                    AND (
+                        REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') = :exact
+                        OR (
+                            SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',1)::int <= :zmax
+                            AND SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',2)::int >= :zmin
+                        )
                     )
-                )
-            """
-            params.update({"exact": z_input, "zmin": zmin, "zmax": zmax})
-        except Exception:
-            query += " AND REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') LIKE :zone"
-            params["zone"] = f"%{z_input}%"
-    else:
-        # одиночное значение, например 6
-        try:
-            z = int(z_input)
-            query += """
-                AND (
-                    REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') LIKE :zone
-                    OR (
-                        SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',1)::int <= :z
-                        AND SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',2)::int >= :z
+                """
+                params.update({"exact": z_input, "zmin": zmin, "zmax": zmax})
+            except Exception:
+                query += " AND REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') LIKE :zone"
+                params["zone"] = f"%{z_input}%"
+        else:
+            try:
+                z = int(z_input)
+                query += """
+                    AND (
+                        REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') LIKE :zone
+                        OR (
+                            SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',1)::int <= :z
+                            AND SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',2)::int >= :z
+                        )
                     )
-                )
-            """
-            params.update({"zone": f"%{z_input}%", "z": z})
-        except Exception:
-            query += " AND REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') LIKE :zone"
-            params["zone"] = f"%{z_input}%"
+                """
+                params.update({"zone": f"%{z_input}%", "z": z})
+            except Exception:
+                query += " AND REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') LIKE :zone"
+                params["zone"] = f"%{z_input}%"
 
-
+    # фильтр по типу размещения
     if placement:
         if placement == "комнатное":
             query += " AND indoor = true"
@@ -208,8 +185,8 @@ def custom_openapi():
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="1.6.8",
-        description="USDA как enum + игнор temperature при выбранном USDA.",
+        version="1.7.0",
+        description="Окончательная логика USDA: поддержка диапазонов и одиночных значений.",
         routes=app.routes,
     )
     schema.setdefault("components", {}).setdefault("securitySchemes", {})
