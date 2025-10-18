@@ -17,23 +17,30 @@ app = FastAPI(
     version="1.9"
 )
 
-# --- CORS: берём разрешённые источники из .env ---
-origins = os.getenv("CORS_ORIGINS", "").split(",")
-
+# --- CORS-настройка ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",  # локальный фронт
         "https://web-production-93a9e.up.railway.app",  # задеплоенный LID
-        "https://web-production-310c7c7.up.railway.app"  # сам API (для тестов)
+        "https://web-production-310c7c7.up.railway.app"  # сам API
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# --- ручное добавление CORS-заголовков (Railway фикс) ---
+@app.middleware("http")
+async def add_cors_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "X-API-Key, Content-Type"
+    return response
+
 # --- API key middleware ---
-API_KEY_NAME = "X-API-Key"  # фикс регистра
+API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 async def verify_api_key(request: Request, api_key: Optional[str] = Depends(api_key_header)):
@@ -52,7 +59,6 @@ async def health_check():
 # --- Пример защищённого эндпоинта ---
 @app.get("/v1/plants", dependencies=[Depends(verify_api_key)])
 async def get_plants(limit: int = 10):
-    # пример фиктивных данных; в реальности подключается база PostgreSQL
     data = [{"id": i, "name": f"Plant {i}"} for i in range(limit)]
     return {"count": len(data), "results": data}
 
