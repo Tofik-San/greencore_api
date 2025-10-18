@@ -14,29 +14,34 @@ load_dotenv()
 app = FastAPI(
     title="GreenCore API",
     description="API для работы с базой растений GreenCore",
-    version="1.9"
+    version="2.0"
 )
 
-# --- CORS-настройка ---
+# --- CORS (фикс для Railway) ---
+allowed_origins = [
+    "http://localhost:3000",
+    "https://web-production-93a9e.up.railway.app",
+    "https://web-production-310c7c7.up.railway.app",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # локальный фронт
-        "https://web-production-93a9e.up.railway.app",  # задеплоенный LID
-        "https://web-production-310c7c7.up.railway.app"  # сам API
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- ручное добавление CORS-заголовков (Railway фикс) ---
+# --- Middleware для полного контроля заголовков ---
 @app.middleware("http")
-async def add_cors_headers(request: Request, call_next):
+async def custom_cors_middleware(request: Request, call_next):
     response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    origin = request.headers.get("origin")
+    if origin in allowed_origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "X-API-Key, Content-Type"
+    response.headers["Access-Control-Allow-Headers"] = "X-API-Key, Content-Type, Authorization"
     return response
 
 # --- API key middleware ---
