@@ -59,12 +59,12 @@ def get_plants(
     query = "SELECT * FROM plants WHERE 1=1"
     params: dict = {}
 
-    # поиск по названию
+    # Поиск по названию
     if view:
         query += " AND (LOWER(view) LIKE :view OR LOWER(cultivar) LIKE :view)"
         params["view"] = f"%{view.lower()}%"
 
-    # фильтр по освещённости
+    # Фильтр освещённости
     if light:
         pats = LIGHT_PATTERNS.get(light, [])
         if pats:
@@ -75,7 +75,7 @@ def get_plants(
                 params[key] = f"%{pat.lower()}%"
             query += " AND (" + " OR ".join(clauses) + ")"
 
-    # фильтр USDA (устойчивый к длинным тире)
+    # Фильтр USDA (устойчивый к длинным тире)
     if zone_usda:
         z_input = zone_usda.strip()
         try:
@@ -99,19 +99,19 @@ def get_plants(
             query += " AND COALESCE(filter_zone_usda, '') LIKE :zone"
             params["zone"] = f"%{z_input}%"
 
-    # фильтр по таксичности (корректно)
+    # Фильтр по таксичности
     if toxicity:
         query += " AND LOWER(toxicity) = :tox"
         params["tox"] = toxicity.lower()
 
-    # фильтр по размещению
+    # Фильтр по типу размещения
     if placement:
         if placement == "комнатное":
             query += " AND indoor = true"
         elif placement == "садовое":
             query += " AND outdoor = true"
 
-    # сортировка (по умолчанию — случайная выборка)
+    # Сортировка
     if sort == "random":
         query += " ORDER BY RANDOM()"
     else:
@@ -235,7 +235,14 @@ async def verify_dynamic_api_key(request: Request, call_next):
     if not row:
         raise HTTPException(status_code=403, detail="Invalid API key")
 
-    active, expires_at, used, plan_name, plan_limit, plan_max_page = row
+    mapping = row._mapping
+    active = mapping["active"]
+    expires_at = mapping["expires_at"]
+    used = mapping["requests"]
+    plan_name = mapping["plan_name"]
+    plan_limit = mapping["limit_total"]
+    plan_max_page = mapping["max_page"]
+
     if not active:
         raise HTTPException(status_code=403, detail="Inactive API key")
     if expires_at and expires_at < datetime.utcnow():
@@ -267,21 +274,30 @@ async def verify_dynamic_api_key(request: Request, call_next):
             {"key": api_key}
         ).fetchone()
 
-        if r and r["limit_total"] and r["requests"] >= r["limit_total"]:
-            cooldown_days = COOLDOWN_DAYS.get(r["plan_name"], 0)
-            next_allowed = now + timedelta(days=cooldown_days) if cooldown_days > 0 else None
-            if next_allowed:
-                conn.execute(
-                    text("""
-                        UPDATE api_keys
-                        SET active = FALSE,
-                            next_issue_allowed = :next_allowed
-                        WHERE api_key = :key
-                    """),
-                    {"next_allowed": next_allowed, "key": api_key}
-                )
-            else:
-                conn.execute(text("UPDATE api_keys SET active = FALSE WHERE api_key = :key"), {"key": api_key})
+        if r:
+            row_map = r._mapping
+            used_after = row_map["requests"]
+            plan_name_after = row_map["plan_name"]
+            plan_limit_after = row_map["limit_total"]
+
+            if plan_limit_after and used_after >= plan_limit_after:
+                cooldown_days = COOLDOWN_DAYS.get(plan_name_after, 0)
+                next_allowed = now + timedelta(days=cooldown_days) if cooldown_days > 0 else None
+                if next_allowed:
+                    conn.execute(
+                        text("""
+                            UPDATE api_keys
+                            SET active = FALSE,
+                                next_issue_allowed = :next_allowed
+                            WHERE api_key = :key
+                        """),
+                        {"next_allowed": next_allowed, "key": api_key}
+                    )
+                else:
+                    conn.execute(
+                        text("UPDATE api_keys SET active = FALSE WHERE api_key = :key"),
+                        {"key": api_key}
+                    )
 
     return response
 
@@ -294,8 +310,8 @@ def custom_openapi():
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="2.1.0",
-        description="GreenCore API — фильтр USDA (устойчивый к тире), фильтр токсичности, random-сортировка и тарифные лимиты.",
+        version="2.2.0",
+        description="GreenCore API — стабильная версия с защитой, фильтрами USDA/токсичности и тарифами.",
         routes=app.routes,
     )
     schema.setdefault("components", {}).setdefault("securitySchemes", {})
