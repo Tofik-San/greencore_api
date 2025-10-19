@@ -37,7 +37,7 @@ LIGHT_PATTERNS = {
     "яркий": ["full sun", "sun", "прямое солнце", "яркий", "солнеч"],
 }
 
-COOLDOWN_DAYS = {"free": 1, "premium": 0, "supreme": 0}
+COOLDOWN_DAYS = {"free": 1, "premium": 15, "supreme": 30}
 
 # ────────────────────────────────
 # 🌿 /plants
@@ -215,7 +215,7 @@ async def alert_5xx_middleware(request: Request, call_next):
 # ────────────────────────────────
 @app.middleware("http")
 async def verify_dynamic_api_key(request: Request, call_next):
-    open_paths = ["/docs", "/openapi.json", "/health", "/generate_key", "/_alert_test"]
+    open_paths = ["/docs", "/openapi.json", "/health", "/generate_key", "/_alert_test", "/favicon.ico"]
     if any(request.url.path.startswith(p) for p in open_paths):
         return await call_next(request)
 
