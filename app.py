@@ -68,41 +68,65 @@ def get_plants(
             query += " AND (" + " OR ".join(clauses) + ")"
 
     # фильтр USDA (понимает диапазоны и одиночные значения)
-    if zone_usda:
-        z_input = zone_usda.replace("–", "-").replace("—", "-").strip()
+    # фильтр USDA (поддержка диапазонов и одиночных значений, устойчив к пустым)
+if zone_usda:
+    z_input = zone_usda.replace("–", "-").replace("—", "-").strip()
 
-        if "-" in z_input:
-            try:
-                zmin, zmax = [int(x) for x in z_input.split("-")]
-                query += """
+    if "-" in z_input:
+        try:
+            zmin, zmax = [int(x) for x in z_input.split("-")]
+            query += """
+                AND (
+                    TRIM(filter_zone_usda) != ''
+                    AND filter_zone_usda IS NOT NULL
                     AND (
-                        REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') = :exact
+                        filter_zone_usda = :exact
                         OR (
-                            SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',1)::int <= :zmax
-                            AND SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',2)::int >= :zmin
+                            SPLIT_PART(filter_zone_usda, '-', 1)::int <= :zmax
+                            AND SPLIT_PART(
+                                CASE 
+                                    WHEN POSITION('-' IN filter_zone_usda) > 0 
+                                    THEN filter_zone_usda 
+                                    ELSE filter_zone_usda || '-' || filter_zone_usda 
+                                END, 
+                                '-', 2
+                            )::int >= :zmin
                         )
                     )
-                """
-                params.update({"exact": z_input, "zmin": zmin, "zmax": zmax})
-            except Exception:
-                query += " AND REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') LIKE :zone"
-                params["zone"] = f"%{z_input}%"
-        else:
-            try:
-                z = int(z_input)
-                query += """
+                )
+            """
+            params.update({"exact": z_input, "zmin": zmin, "zmax": zmax})
+        except Exception:
+            query += " AND filter_zone_usda LIKE :zone"
+            params["zone"] = f"%{z_input}%"
+    else:
+        try:
+            z = int(z_input)
+            query += """
+                AND (
+                    TRIM(filter_zone_usda) != ''
+                    AND filter_zone_usda IS NOT NULL
                     AND (
-                        REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') LIKE :zone
+                        filter_zone_usda LIKE :zone
                         OR (
-                            SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',1)::int <= :z
-                            AND SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',2)::int >= :z
+                            SPLIT_PART(filter_zone_usda, '-', 1)::int <= :z
+                            AND SPLIT_PART(
+                                CASE 
+                                    WHEN POSITION('-' IN filter_zone_usda) > 0 
+                                    THEN filter_zone_usda 
+                                    ELSE filter_zone_usda || '-' || filter_zone_usda 
+                                END, 
+                                '-', 2
+                            )::int >= :z
                         )
                     )
-                """
-                params.update({"zone": f"%{z_input}%", "z": z})
-            except Exception:
-                query += " AND REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') LIKE :zone"
-                params["zone"] = f"%{z_input}%"
+                )
+            """
+            params.update({"zone": f"%{z_input}%", "z": z})
+        except Exception:
+            query += " AND filter_zone_usda LIKE :zone"
+            params["zone"] = f"%{z_input}%"
+
 
     # фильтр по типу размещения
     if placement:
