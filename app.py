@@ -7,6 +7,10 @@ from typing import Optional, Literal
 from fastapi.openapi.utils import get_openapi
 from datetime import datetime, timedelta
 import secrets
+from fastapi.responses import JSONResponse
+
+# 🔔 уведомления
+from utils.notify import send_alert
 
 # ────────────────────────────────
 # 🔧 Конфигурация
@@ -67,7 +71,7 @@ def get_plants(
                 params[key] = f"%{pat.lower()}%"
             query += " AND (" + " OR ".join(clauses) + ")"
 
-    # фильтр USDA (±1 зона, устойчивый к тире)
+    # фильтр USDA (±1 зона)
     if zone_usda:
         z_input = zone_usda.strip()
         try:
@@ -181,11 +185,37 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
     return {"api_key": new_key, "plan": plan, "expires_in_days": 90 if plan == "free" else None}
 
 # ────────────────────────────────
+# 🧠 Middleware алертов (5xx и uncaught)
+# ────────────────────────────────
+@app.middleware("http")
+async def alert_5xx_middleware(request: Request, call_next):
+    try:
+        response = await call_next(request)
+        if 500 <= response.status_code < 600:
+            await send_alert(
+                event_type="server_error",
+                detail={"msg": "5xx response"},
+                user_key=request.headers.get("X-API-Key"),
+                endpoint=request.url.path,
+                status_code=response.status_code,
+            )
+        return response
+    except Exception as e:
+        await send_alert(
+            event_type="uncaught_exception",
+            detail={"error": str(e)},
+            user_key=request.headers.get("X-API-Key"),
+            endpoint=request.url.path,
+            status_code=500,
+        )
+        return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+
+# ────────────────────────────────
 # 🧠 Middleware лимитов
 # ────────────────────────────────
 @app.middleware("http")
 async def verify_dynamic_api_key(request: Request, call_next):
-    open_paths = ["/docs", "/openapi.json", "/health", "/generate_key"]
+    open_paths = ["/docs", "/openapi.json", "/health", "/generate_key", "/_alert_test"]
     if any(request.url.path.startswith(p) for p in open_paths):
         return await call_next(request)
 
@@ -245,6 +275,20 @@ async def verify_dynamic_api_key(request: Request, call_next):
                 else:
                     conn.execute(text("UPDATE api_keys SET active=FALSE WHERE api_key=:key"), {"key": api_key})
     return response
+
+# ────────────────────────────────
+# 🔔 Тестовый эндпоинт алертов
+# ────────────────────────────────
+@app.get("/_alert_test")
+async def _alert_test(request: Request):
+    await send_alert(
+        "test",
+        {"msg": "Система активна"},
+        request.headers.get("X-API-Key"),
+        "/_alert_test",
+        200,
+    )
+    return {"ok": True}
 
 # ────────────────────────────────
 # 📘 Swagger
