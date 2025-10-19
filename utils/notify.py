@@ -34,6 +34,8 @@ async def send_alert(event_type: str, detail: dict | str,
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             await client.post(url, json=payload)
-    except Exception:
+    except Exception as e:
+    print(f"[NotifyError] {e}")
+
         # не роняем API, просто молчим
         pass
