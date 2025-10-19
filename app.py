@@ -48,7 +48,9 @@ COOLDOWN_DAYS = {"free": 1, "premium": 0, "supreme": 0}
 def get_plants(
     view: Optional[str] = Query(None, description="Название вида или сорта"),
     light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None, description="Освещённость"),
-    zone_usda: Optional[str] = Query(None, description="Климатическая зона USDA"),
+    zone_usda: Optional[Literal[
+        "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"
+    ]] = Query(None, description="Климатическая зона USDA (фиксированный выбор)"),
     toxicity: Optional[Literal["none", "mild", "toxic"]] = Query(None, description="Таксичность растения"),
     placement: Optional[Literal["комнатное", "садовое"]] = Query(None, description="Тип размещения"),
     sort: Optional[Literal["id", "random"]] = Query("random", description="Порядок сортировки (id или random)"),
@@ -73,53 +75,29 @@ def get_plants(
                 params[key] = f"%{pat.lower()}%"
             query += " AND (" + " OR ".join(clauses) + ")"
 
-    # фильтр USDA
+    # фильтр USDA (фиксированный список)
     if zone_usda:
-        z_input = zone_usda.replace("–", "-").replace("—", "-").strip()
-        if "-" in z_input:
-            try:
-                zmin, zmax = [int(x) for x in z_input.split("-")]
-                query += """
+        z_input = zone_usda.strip()
+        try:
+            z = int(z_input)
+            query += """
+                AND (
+                    TRIM(COALESCE(filter_zone_usda, '')) != ''
                     AND (
-                        TRIM(COALESCE(filter_zone_usda, '')) != ''
-                        AND (
-                            TRIM(filter_zone_usda) = :exact
-                            OR (
-                                (CASE WHEN POSITION('-' IN filter_zone_usda) > 0 THEN SPLIT_PART(filter_zone_usda, '-', 1) ELSE filter_zone_usda END)::int <= :zmax
-                                AND
-                                (CASE WHEN POSITION('-' IN filter_zone_usda) > 0 THEN SPLIT_PART(filter_zone_usda, '-', 2) ELSE filter_zone_usda END)::int >= :zmin
-                            )
-                        )
+                        (CASE WHEN POSITION('-' IN filter_zone_usda) > 0 THEN SPLIT_PART(filter_zone_usda, '-', 1) ELSE filter_zone_usda END)::int <= :z
+                        AND
+                        (CASE WHEN POSITION('-' IN filter_zone_usda) > 0 THEN SPLIT_PART(filter_zone_usda, '-', 2) ELSE filter_zone_usda END)::int >= :z
                     )
-                """
-                params.update({"exact": z_input, "zmin": zmin, "zmax": zmax})
-            except Exception:
-                query += " AND COALESCE(filter_zone_usda, '') LIKE :zone"
-                params["zone"] = f"%{z_input}%"
-        else:
-            try:
-                z = int(z_input)
-                query += """
-                    AND (
-                        TRIM(COALESCE(filter_zone_usda, '')) != ''
-                        AND (
-                            COALESCE(filter_zone_usda, '') LIKE :zone
-                            OR (
-                                (CASE WHEN POSITION('-' IN filter_zone_usda) > 0 THEN SPLIT_PART(filter_zone_usda, '-', 1) ELSE filter_zone_usda END)::int <= :z
-                                AND
-                                (CASE WHEN POSITION('-' IN filter_zone_usda) > 0 THEN SPLIT_PART(filter_zone_usda, '-', 2) ELSE filter_zone_usda END)::int >= :z
-                            )
-                        )
-                    )
-                """
-                params.update({"zone": f"%{z_input}%", "z": z})
-            except Exception:
-                query += " AND COALESCE(filter_zone_usda, '') LIKE :zone"
-                params["zone"] = f"%{z_input}%"
+                )
+            """
+            params["z"] = z
+        except Exception:
+            query += " AND COALESCE(filter_zone_usda, '') LIKE :zone"
+            params["zone"] = f"%{z_input}%"
 
-    # фильтр по таксичности
+    # фильтр по таксичности (исправлено)
     if toxicity:
-        query += " AND LOWER(filter_toxicity) = :tox"
+        query += " AND LOWER(toxicity) = :tox"
         params["tox"] = toxicity.lower()
 
     # фильтр по размещению
@@ -312,8 +290,8 @@ def custom_openapi():
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="1.9.0",
-        description="GreenCore API — фильтр USDA, таксичность, random-сортировка и тарифные лимиты.",
+        version="2.0.0",
+        description="GreenCore API — фиксированный USDA, фильтр токсичности, random-сортировка и тарифные лимиты.",
         routes=app.routes,
     )
     schema.setdefault("components", {}).setdefault("securitySchemes", {})
