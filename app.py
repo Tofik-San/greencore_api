@@ -75,7 +75,7 @@ def get_plants(
                 params[key] = f"%{pat.lower()}%"
             query += " AND (" + " OR ".join(clauses) + ")"
 
-    # фильтр USDA (фиксированный список)
+    # фильтр USDA (устойчивый к длинным тире)
     if zone_usda:
         z_input = zone_usda.strip()
         try:
@@ -84,9 +84,13 @@ def get_plants(
                 AND (
                     TRIM(COALESCE(filter_zone_usda, '')) != ''
                     AND (
-                        (CASE WHEN POSITION('-' IN filter_zone_usda) > 0 THEN SPLIT_PART(filter_zone_usda, '-', 1) ELSE filter_zone_usda END)::int <= :z
+                        (CASE WHEN POSITION('-' IN REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-')) > 0 
+                              THEN SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'), '-', 1)
+                              ELSE REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') END)::int <= :z
                         AND
-                        (CASE WHEN POSITION('-' IN filter_zone_usda) > 0 THEN SPLIT_PART(filter_zone_usda, '-', 2) ELSE filter_zone_usda END)::int >= :z
+                        (CASE WHEN POSITION('-' IN REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-')) > 0 
+                              THEN SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'), '-', 2)
+                              ELSE REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') END)::int >= :z
                     )
                 )
             """
@@ -95,7 +99,7 @@ def get_plants(
             query += " AND COALESCE(filter_zone_usda, '') LIKE :zone"
             params["zone"] = f"%{z_input}%"
 
-    # фильтр по таксичности (исправлено)
+    # фильтр по таксичности (корректно)
     if toxicity:
         query += " AND LOWER(toxicity) = :tox"
         params["tox"] = toxicity.lower()
@@ -290,8 +294,8 @@ def custom_openapi():
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="2.0.0",
-        description="GreenCore API — фиксированный USDA, фильтр токсичности, random-сортировка и тарифные лимиты.",
+        version="2.1.0",
+        description="GreenCore API — фильтр USDA (устойчивый к тире), фильтр токсичности, random-сортировка и тарифные лимиты.",
         routes=app.routes,
     )
     schema.setdefault("components", {}).setdefault("securitySchemes", {})
