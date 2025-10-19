@@ -67,66 +67,64 @@ def get_plants(
                 params[key] = f"%{pat.lower()}%"
             query += " AND (" + " OR ".join(clauses) + ")"
 
-    # фильтр USDA (понимает диапазоны и одиночные значения)
     # фильтр USDA (поддержка диапазонов и одиночных значений, устойчив к пустым)
-if zone_usda:
-    z_input = zone_usda.replace("–", "-").replace("—", "-").strip()
+    if zone_usda:
+        z_input = zone_usda.replace("–", "-").replace("—", "-").strip()
 
-    if "-" in z_input:
-        try:
-            zmin, zmax = [int(x) for x in z_input.split("-")]
-            query += """
-                AND (
-                    TRIM(filter_zone_usda) != ''
-                    AND filter_zone_usda IS NOT NULL
+        if "-" in z_input:
+            try:
+                zmin, zmax = [int(x) for x in z_input.split("-")]
+                query += """
                     AND (
-                        filter_zone_usda = :exact
-                        OR (
-                            SPLIT_PART(filter_zone_usda, '-', 1)::int <= :zmax
-                            AND SPLIT_PART(
-                                CASE 
-                                    WHEN POSITION('-' IN filter_zone_usda) > 0 
-                                    THEN filter_zone_usda 
-                                    ELSE filter_zone_usda || '-' || filter_zone_usda 
-                                END, 
-                                '-', 2
-                            )::int >= :zmin
+                        TRIM(filter_zone_usda) != ''
+                        AND filter_zone_usda IS NOT NULL
+                        AND (
+                            filter_zone_usda = :exact
+                            OR (
+                                SPLIT_PART(filter_zone_usda, '-', 1)::int <= :zmax
+                                AND SPLIT_PART(
+                                    CASE 
+                                        WHEN POSITION('-' IN filter_zone_usda) > 0 
+                                        THEN filter_zone_usda 
+                                        ELSE filter_zone_usda || '-' || filter_zone_usda 
+                                    END, 
+                                    '-', 2
+                                )::int >= :zmin
+                            )
                         )
                     )
-                )
-            """
-            params.update({"exact": z_input, "zmin": zmin, "zmax": zmax})
-        except Exception:
-            query += " AND filter_zone_usda LIKE :zone"
-            params["zone"] = f"%{z_input}%"
-    else:
-        try:
-            z = int(z_input)
-            query += """
-                AND (
-                    TRIM(filter_zone_usda) != ''
-                    AND filter_zone_usda IS NOT NULL
+                """
+                params.update({"exact": z_input, "zmin": zmin, "zmax": zmax})
+            except Exception:
+                query += " AND filter_zone_usda LIKE :zone"
+                params["zone"] = f"%{z_input}%"
+        else:
+            try:
+                z = int(z_input)
+                query += """
                     AND (
-                        filter_zone_usda LIKE :zone
-                        OR (
-                            SPLIT_PART(filter_zone_usda, '-', 1)::int <= :z
-                            AND SPLIT_PART(
-                                CASE 
-                                    WHEN POSITION('-' IN filter_zone_usda) > 0 
-                                    THEN filter_zone_usda 
-                                    ELSE filter_zone_usda || '-' || filter_zone_usda 
-                                END, 
-                                '-', 2
-                            )::int >= :z
+                        TRIM(filter_zone_usda) != ''
+                        AND filter_zone_usda IS NOT NULL
+                        AND (
+                            filter_zone_usda LIKE :zone
+                            OR (
+                                SPLIT_PART(filter_zone_usda, '-', 1)::int <= :z
+                                AND SPLIT_PART(
+                                    CASE 
+                                        WHEN POSITION('-' IN filter_zone_usda) > 0 
+                                        THEN filter_zone_usda 
+                                        ELSE filter_zone_usda || '-' || filter_zone_usda 
+                                    END, 
+                                    '-', 2
+                                )::int >= :z
+                            )
                         )
                     )
-                )
-            """
-            params.update({"zone": f"%{z_input}%", "z": z})
-        except Exception:
-            query += " AND filter_zone_usda LIKE :zone"
-            params["zone"] = f"%{z_input}%"
-
+                """
+                params.update({"zone": f"%{z_input}%", "z": z})
+            except Exception:
+                query += " AND filter_zone_usda LIKE :zone"
+                params["zone"] = f"%{z_input}%"
 
     # фильтр по типу размещения
     if placement:
