@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import secrets
 
 # ────────────────────────────────
-# 🔧 Загрузка конфигурации
+# 🔧 Конфигурация
 # ────────────────────────────────
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -17,9 +17,6 @@ MASTER_KEY = os.getenv("MASTER_KEY")
 
 app = FastAPI()
 
-# ────────────────────────────────
-# 🌐 CORS
-# ────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,9 +27,6 @@ app.add_middleware(
 
 engine = create_engine(DATABASE_URL)
 
-# ────────────────────────────────
-# 💡 Паттерны освещённости
-# ────────────────────────────────
 LIGHT_PATTERNS = {
     "тень": ["full shade", "shade", "тень", "indirect", "diffused"],
     "полутень": ["part shade", "partial", "полутень", "рассеян", "утреннее"],
@@ -46,21 +40,23 @@ COOLDOWN_DAYS = {"free": 1, "premium": 0, "supreme": 0}
 # ────────────────────────────────
 @app.get("/plants")
 def get_plants(
-    view: Optional[str] = Query(None, description="Название вида или сорта"),
-    light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None, description="Освещённость"),
-    zone_usda: Optional[Literal["2","3","4","5","6","7","8","9","10","11","12"]] = Query(None, description="Климатическая зона USDA"),
-    toxicity: Optional[Literal["none","mild","toxic"]] = Query(None, description="Таксичность растения"),
-    placement: Optional[Literal["комнатное","садовое"]] = Query(None, description="Тип размещения"),
-    sort: Optional[Literal["id","random"]] = Query("random", description="Порядок сортировки"),
-    limit: int = Query(50, ge=1, le=100, description="Количество карточек")
+    view: Optional[str] = Query(None),
+    light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None),
+    zone_usda: Optional[Literal["2","3","4","5","6","7","8","9","10","11","12"]] = Query(None),
+    toxicity: Optional[Literal["none","mild","toxic"]] = Query(None),
+    placement: Optional[Literal["комнатное","садовое"]] = Query(None),
+    sort: Optional[Literal["id","random"]] = Query("random"),
+    limit: int = Query(50, ge=1, le=100)
 ):
     query = "SELECT * FROM plants WHERE 1=1"
     params = {}
 
+    # поиск по названию
     if view:
         query += " AND (LOWER(view) LIKE :view OR LOWER(cultivar) LIKE :view)"
         params["view"] = f"%{view.lower()}%"
 
+    # фильтр освещённости
     if light:
         pats = LIGHT_PATTERNS.get(light, [])
         if pats:
@@ -71,75 +67,74 @@ def get_plants(
                 params[key] = f"%{pat.lower()}%"
             query += " AND (" + " OR ".join(clauses) + ")"
 
-    # устойчивый к тире фильтр USDA
+    # фильтр USDA (±1 зона, устойчивый к тире)
     if zone_usda:
         z_input = zone_usda.strip()
         try:
             z = int(z_input)
+            zmin = max(z - 1, 1)
+            zmax = min(z + 1, 12)
             query += """
                 AND (
                     TRIM(COALESCE(filter_zone_usda, '')) != ''
                     AND (
                         (CASE WHEN POSITION('-' IN REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'))>0
                               THEN SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',1)
-                              ELSE REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') END)::int <= :z
+                              ELSE REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') END)::int <= :zmax
                         AND
                         (CASE WHEN POSITION('-' IN REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'))>0
                               THEN SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',2)
-                              ELSE REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') END)::int >= :z
+                              ELSE REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') END)::int >= :zmin
                     )
                 )
             """
-            params["z"] = z
+            params.update({"zmin": zmin, "zmax": zmax})
         except Exception:
             query += " AND COALESCE(filter_zone_usda,'') LIKE :zone"
             params["zone"] = f"%{z_input}%"
 
+    # токсичность
     if toxicity:
         query += " AND LOWER(toxicity) = :tox"
         params["tox"] = toxicity.lower()
 
+    # размещение
     if placement:
         if placement == "комнатное":
             query += " AND indoor = true"
         elif placement == "садовое":
             query += " AND outdoor = true"
 
+    # сортировка
     query += " ORDER BY RANDOM()" if sort == "random" else " ORDER BY id"
     query += " LIMIT :limit"
     params["limit"] = limit
 
-    with engine.connect() as connection:
-        result = connection.execute(text(query), params)
+    with engine.connect() as conn:
+        result = conn.execute(text(query), params)
         plants = [dict(row._mapping) for row in result]
     return {"count": len(plants), "limit": limit, "results": plants}
 
 # ────────────────────────────────
-# 🔍 /plant/{id}
+# 🔍 Остальные эндпоинты
 # ────────────────────────────────
 @app.get("/plant/{plant_id}")
 def get_plant(plant_id: int):
-    with engine.connect() as connection:
-        row = connection.execute(
-            text("SELECT * FROM plants WHERE id = :id"), {"id": plant_id}
-        ).fetchone()
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT * FROM plants WHERE id=:id"), {"id": plant_id}).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Plant not found")
     return dict(row._mapping)
 
-# ────────────────────────────────
-# 📊 /stats
-# ────────────────────────────────
 @app.get("/stats")
 def get_stats():
-    with engine.connect() as connection:
-        row = connection.execute(text("""
-            SELECT 
-                COUNT(*) AS total,
-                COUNT(DISTINCT view) AS unique_views,
-                COUNT(DISTINCT family) AS unique_families,
-                SUM(CASE WHEN toxicity='toxic' THEN 1 ELSE 0 END) AS toxic_count,
-                SUM(CASE WHEN beginner_friendly=true THEN 1 ELSE 0 END) AS beginner_friendly_count
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT COUNT(*) AS total,
+                   COUNT(DISTINCT view) AS unique_views,
+                   COUNT(DISTINCT family) AS unique_families,
+                   SUM(CASE WHEN toxicity='toxic' THEN 1 ELSE 0 END) AS toxic_count,
+                   SUM(CASE WHEN beginner_friendly=true THEN 1 ELSE 0 END) AS beginner_friendly_count
             FROM plants;
         """)).fetchone()
     return dict(row._mapping)
@@ -149,7 +144,7 @@ def health_check():
     return {"status": "ok"}
 
 # ────────────────────────────────
-# 🗝️ Генерация API-ключей
+# 🗝️ Генерация ключей
 # ────────────────────────────────
 @app.post("/generate_key")
 def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user", plan: str = "free"):
@@ -161,8 +156,7 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
 
     with engine.begin() as conn:
         active_row = conn.execute(
-            text("SELECT id FROM api_keys WHERE LOWER(owner)=:o AND active=TRUE"),
-            {"o": owner_norm}
+            text("SELECT id FROM api_keys WHERE LOWER(owner)=:o AND active=TRUE"), {"o": owner_norm}
         ).fetchone()
         if active_row:
             raise HTTPException(status_code=403, detail="Active API key already exists for this owner")
@@ -172,13 +166,10 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
             {"o": owner_norm}
         ).fetchone()
         if pending:
-            pending_map = pending._mapping
-            next_allowed = pending_map["next_issue_allowed"]
+            p = pending._mapping
+            next_allowed = p["next_issue_allowed"]
             if next_allowed and next_allowed > now:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"New key not allowed until {next_allowed.isoformat()}"
-                )
+                raise HTTPException(status_code=403, detail=f"New key not allowed until {next_allowed.isoformat()}")
 
         new_key = secrets.token_hex(32)
         expires = now + timedelta(days=90) if plan == "free" else None
@@ -187,10 +178,10 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
             {"k": new_key, "o": owner_norm, "p": plan, "e": expires}
         )
 
-    return {"api_key": new_key, "plan": plan, "expires_in_days": 90 if plan=="free" else None}
+    return {"api_key": new_key, "plan": plan, "expires_in_days": 90 if plan == "free" else None}
 
 # ────────────────────────────────
-# 🧠 Middleware проверки лимитов
+# 🧠 Middleware лимитов
 # ────────────────────────────────
 @app.middleware("http")
 async def verify_dynamic_api_key(request: Request, call_next):
@@ -256,21 +247,20 @@ async def verify_dynamic_api_key(request: Request, call_next):
     return response
 
 # ────────────────────────────────
-# 📘 Swagger / OpenAPI
+# 📘 Swagger
 # ────────────────────────────────
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="2.3.0",
-        description="GreenCore API — стабильная продакшн-версия с фильтрами USDA/токсичности, лимитами и защитой ключей.",
+        version="2.4.0",
+        description="GreenCore API — расширенный фильтр USDA (±1 зона), токсичность, тарифы и лимиты.",
         routes=app.routes,
     )
-    schema.setdefault("components", {}).setdefault("securitySchemes", {})
-    schema["components"]["securitySchemes"]["APIKeyHeader"] = {
-        "type": "apiKey", "in": "header", "name": "X-API-Key"
-    }
+    schema["components"] = {"securitySchemes": {
+        "APIKeyHeader": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
+    }}
     for path in schema["paths"]:
         for method in schema["paths"][path]:
             schema["paths"][path][method]["security"] = [{"APIKeyHeader": []}]
