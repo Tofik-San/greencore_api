@@ -129,6 +129,7 @@ def get_plant(plant_id: int):
         if not row:
             raise HTTPException(status_code=404, detail="Plant not found")
     return dict(row._mapping)
+
 # ────────────────────────────────
 # 💳 Тарифные планы
 # ────────────────────────────────
@@ -139,13 +140,11 @@ def get_plans():
     Используется фронтендом для отображения тарифов.
     """
     with engine.connect() as conn:
-        result = db.execute(text("""
+        result = conn.execute(text("""
           SELECT id, name, price_rub AS price, limit_total, max_page
           FROM plans
           ORDER BY id
-
         """))
-
         plans = [dict(row._mapping) for row in result]
 
     if not plans:
@@ -241,7 +240,6 @@ async def verify_dynamic_api_key(request: Request, call_next):
     open_paths = ["/docs", "/openapi.json", "/health", "/generate_key", "/_alert_test", "/favicon.ico", "/plans"]
     if any(request.url.path.rstrip("/").startswith(p.rstrip("/")) for p in open_paths):
         return await call_next(request)
-)
 
     api_key = request.headers.get("X-API-Key")
     if not api_key:
