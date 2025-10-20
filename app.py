@@ -238,8 +238,9 @@ async def alert_5xx_middleware(request: Request, call_next):
 @app.middleware("http")
 async def verify_dynamic_api_key(request: Request, call_next):
     open_paths = ["/docs", "/openapi.json", "/health", "/generate_key", "/_alert_test", "/favicon.ico", "/plans"]
-    if any(request.url.path.startswith(p) for p in open_paths):
+    if any(request.url.path.rstrip("/").startswith(p.rstrip("/")) for p in open_paths):
         return await call_next(request)
+)
 
     api_key = request.headers.get("X-API-Key")
     if not api_key:
