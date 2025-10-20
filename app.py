@@ -129,6 +129,34 @@ def get_plant(plant_id: int):
         if not row:
             raise HTTPException(status_code=404, detail="Plant not found")
     return dict(row._mapping)
+# ────────────────────────────────
+# 💳 Тарифные планы
+# ────────────────────────────────
+@app.get("/plans")
+def get_plans():
+    """
+    Возвращает список тарифных планов с их параметрами.
+    Используется фронтендом для отображения тарифов.
+    """
+    with engine.connect() as conn:
+        result = conn.execute(text("""
+            SELECT 
+                id,
+                name,
+                price,
+                limit_total,
+                max_page,
+                cooldown,
+                description
+            FROM plans
+            ORDER BY id
+        """))
+        plans = [dict(row._mapping) for row in result]
+
+    if not plans:
+        return {"plans": [], "message": "Нет доступных тарифов."}
+
+    return {"plans": plans, "count": len(plans)}
 
 @app.get("/stats")
 def get_stats():
