@@ -33,20 +33,20 @@ async def send_alert(
         detail_text = str(detail)
 
     text = (
-        "⚠️ *GreenCore API Alert*\n"
-        f"*Тип:* {event_type}\n"
-        f"*Время:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"*Ключ:* {user_key or '-'}\n"
-        f"*Endpoint:* {endpoint or '-'}\n"
-        f"*Статус:* {status_code or '-'}\n"
-        f"*Детали:* {detail_text}"
+        f"⚠️ <b>GreenCore API Alert</b>\n"
+        f"<b>Тип:</b> {event_type}\n"
+        f"<b>Время:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"<b>Ключ:</b> {user_key or '-'}\n"
+        f"<b>Endpoint:</b> {endpoint or '-'}\n"
+        f"<b>Статус:</b> {status_code or '-'}\n"
+        f"<b>Детали:</b> {detail_text}"
     )
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": int(TELEGRAM_CHAT_ID),
         "text": text,
-        "parse_mode": "Markdown",
+        "parse_mode": "HTML",  # ✅ безопасный режим
     }
 
     try:
