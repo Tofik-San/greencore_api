@@ -140,9 +140,10 @@ def get_plans():
     """
     with engine.connect() as conn:
         result = db.execute(text("""
-          SELECT id, name, price_rub AS price, limit_total, max_page, allowed_filters, allowed_fields
+          SELECT id, name, price_rub AS price, limit_total, max_page
           FROM plans
           ORDER BY id
+
         """))
 
         plans = [dict(row._mapping) for row in result]
