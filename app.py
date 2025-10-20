@@ -139,18 +139,12 @@ def get_plans():
     Используется фронтендом для отображения тарифов.
     """
     with engine.connect() as conn:
-        result = conn.execute(text("""
-            SELECT 
-                id,
-                name,
-                price,
-                limit_total,
-                max_page,
-                cooldown,
-                description
-            FROM plans
-            ORDER BY id
+        result = db.execute(text("""
+          SELECT id, name, price_rub AS price, limit_total, max_page, allowed_filters, allowed_fields
+          FROM plans
+          ORDER BY id
         """))
+
         plans = [dict(row._mapping) for row in result]
 
     if not plans:
