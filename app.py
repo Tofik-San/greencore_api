@@ -8,6 +8,7 @@ from fastapi.openapi.utils import get_openapi
 from datetime import datetime, timedelta
 import secrets
 from fastapi.responses import JSONResponse
+import requests  # 👈 добавлено
 
 # 🔔 уведомления
 from utils.notify import send_alert
@@ -55,12 +56,10 @@ def get_plants(
     query = "SELECT * FROM plants WHERE 1=1"
     params = {}
 
-    # поиск по названию
     if view:
         query += " AND (LOWER(view) LIKE :view OR LOWER(cultivar) LIKE :view)"
         params["view"] = f"%{view.lower()}%"
 
-    # фильтр освещённости
     if light:
         pats = LIGHT_PATTERNS.get(light, [])
         if pats:
@@ -71,7 +70,6 @@ def get_plants(
                 params[key] = f"%{pat.lower()}%"
             query += " AND (" + " OR ".join(clauses) + ")"
 
-    # фильтр USDA (±1 зона)
     if zone_usda:
         z_input = zone_usda.strip()
         try:
@@ -97,19 +95,16 @@ def get_plants(
             query += " AND COALESCE(filter_zone_usda,'') LIKE :zone"
             params["zone"] = f"%{z_input}%"
 
-    # токсичность
     if toxicity:
         query += " AND LOWER(toxicity) = :tox"
         params["tox"] = toxicity.lower()
 
-    # размещение
     if placement:
         if placement == "комнатное":
             query += " AND indoor = true"
         elif placement == "садовое":
             query += " AND outdoor = true"
 
-    # сортировка
     query += " ORDER BY RANDOM()" if sort == "random" else " ORDER BY id"
     query += " LIMIT :limit"
     params["limit"] = limit
@@ -135,10 +130,6 @@ def get_plant(plant_id: int):
 # ────────────────────────────────
 @app.get("/plans")
 def get_plans():
-    """
-    Возвращает список тарифных планов с их параметрами.
-    Используется фронтендом для отображения тарифов.
-    """
     with engine.connect() as conn:
         result = conn.execute(text("""
           SELECT id, name, price_rub AS price, limit_total, max_page
@@ -149,7 +140,6 @@ def get_plans():
 
     if not plans:
         return {"plans": [], "message": "Нет доступных тарифов."}
-
     return {"plans": plans, "count": len(plans)}
 
 @app.get("/stats")
@@ -205,6 +195,37 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
         )
 
     return {"api_key": new_key, "plan": plan, "expires_in_days": 90 if plan == "free" else None}
+
+# ────────────────────────────────
+# 🔐 Безопасный посредник /create_user_key
+# ────────────────────────────────
+@app.post("/create_user_key")
+def create_user_key(plan: str = "free"):
+    """
+    Безопасный эндпоинт для фронта.
+    Принимает план и создаёт ключ через /generate_key с мастер-ключом.
+    Мастер-ключ хранится только на сервере.
+    """
+    if not MASTER_KEY:
+        raise HTTPException(status_code=500, detail="MASTER_KEY not configured")
+
+    api_base = os.getenv("API_BASE_URL", "https://web-production-310c7c.up.railway.app")
+
+    try:
+        resp = requests.post(
+            f"{api_base}/generate_key",
+            headers={"x-api-key": MASTER_KEY},
+            json={"plan": plan, "owner": "user"},
+            timeout=10,
+        )
+        data = resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal request failed: {e}")
+
+    if not resp.ok:
+        raise HTTPException(status_code=resp.status_code, detail=data.get("detail") or data)
+
+    return {"api_key": data.get("api_key"), "plan": plan}
 
 # ────────────────────────────────
 # 🧠 Middleware алертов (5xx и uncaught)
