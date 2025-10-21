@@ -163,6 +163,7 @@ def health_check():
 # 🗝️ Генерация ключей
 # ────────────────────────────────
 @app.post("/generate_key")
+@app.post("/generate_key")
 def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user", plan: str = "free"):
     if x_api_key != MASTER_KEY:
         raise HTTPException(status_code=403, detail="Access denied: admin key required")
@@ -171,30 +172,28 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
     now = datetime.utcnow()
 
     with engine.begin() as conn:
-        active_row = conn.execute(
-            text("SELECT id FROM api_keys WHERE LOWER(owner)=:o AND active=TRUE"), {"o": owner_norm}
-        ).fetchone()
-        if active_row:
-            raise HTTPException(status_code=403, detail="Active API key already exists for this owner")
+        # 🔹 Деактивировать старый ключ, если есть
+        conn.execute(
+            text("UPDATE api_keys SET active=FALSE WHERE LOWER(owner)=:o AND active=TRUE"),
+            {"o": owner_norm},
+        )
 
-        pending = conn.execute(
-            text("SELECT next_issue_allowed FROM api_keys WHERE LOWER(owner)=:o ORDER BY created_at DESC LIMIT 1"),
-            {"o": owner_norm}
-        ).fetchone()
-        if pending:
-            p = pending._mapping
-            next_allowed = p["next_issue_allowed"]
-            if next_allowed and next_allowed > now:
-                raise HTTPException(status_code=403, detail=f"New key not allowed until {next_allowed.isoformat()}")
-
+        # 🔹 Создать новый
         new_key = secrets.token_hex(32)
         expires = now + timedelta(days=90) if plan == "free" else None
         conn.execute(
-            text("INSERT INTO api_keys (api_key, owner, plan_name, expires_at) VALUES (:k,:o,:p,:e)"),
-            {"k": new_key, "o": owner_norm, "p": plan, "e": expires}
+            text(
+                "INSERT INTO api_keys (api_key, owner, plan_name, expires_at, active) "
+                "VALUES (:k, :o, :p, :e, TRUE)"
+            ),
+            {"k": new_key, "o": owner_norm, "p": plan, "e": expires},
         )
 
-    return {"api_key": new_key, "plan": plan, "expires_in_days": 90 if plan == "free" else None}
+    return {
+        "api_key": new_key,
+        "plan": plan,
+        "expires_in_days": 90 if plan == "free" else None,
+    }
 
 # ────────────────────────────────
 # 🔐 Безопасный посредник /create_user_key
