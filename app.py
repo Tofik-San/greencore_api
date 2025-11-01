@@ -22,7 +22,7 @@ MASTER_KEY = os.getenv("MASTER_KEY")
 
 app = FastAPI()
 
-# 🌍 CORS — конкретные домены (исправленный)
+# 🌍 CORS — конкретные домены
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -248,6 +248,10 @@ async def alert_5xx_middleware(request: Request, call_next):
 # ────────────────────────────────
 @app.middleware("http")
 async def verify_dynamic_api_key(request: Request, call_next):
+    # ✅ Разрешаем CORS-предзапросы без ключа
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
     open_paths = ["/docs", "/openapi.json", "/health", "/generate_key", "/create_user_key", "/_alert_test", "/favicon.ico", "/plans"]
     if any(request.url.path.rstrip("/").startswith(p.rstrip("/")) for p in open_paths):
         return await call_next(request)
@@ -283,13 +287,12 @@ async def verify_dynamic_api_key(request: Request, call_next):
             pass
 
     response = await call_next(request)
-    now = datetime.utcnow()
     with engine.begin() as conn:
         conn.execute(text("UPDATE api_keys SET requests=requests+1 WHERE api_key=:key"), {"key": api_key})
     return response
 
 # ────────────────────────────────
-# 🔔 Тестовый эндпоинт алертов
+# 🔔 Тестовый эндпоинт
 # ────────────────────────────────
 @app.get("/_alert_test")
 async def _alert_test(request: Request):
