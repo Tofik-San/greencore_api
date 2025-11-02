@@ -222,18 +222,25 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
 # ────────────────────────────────
 @app.post("/create_user_key")
 def create_user_key(request: Request):
-    # Получаем тариф из query-параметров (например, ?plan=premium)
+    # Читаем тариф из query-параметров, например ?plan=premium
     plan = request.query_params.get("plan", "free")
 
     try:
+        # Отправляем запрос к /generate_key на том же сервере (через Railway-домен)
         resp = requests.post(
-            f"{api_base}/generate_key",
+            "https://web-production-310c7c.up.railway.app/generate_key",
             headers={"x-api-key": MASTER_KEY},
-            json={"plan": plan, "owner": "user"},  # Передаём план в generate_key
+            json={"plan": plan, "owner": "user"},
             timeout=10,
         )
+
+        # Проверяем ответ
+        if resp.status_code >= 500:
+            raise HTTPException(status_code=500, detail="5xx response")
+
         data = resp.json()
         return data
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
