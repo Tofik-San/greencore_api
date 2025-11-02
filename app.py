@@ -8,33 +8,28 @@ from fastapi.openapi.utils import get_openapi
 from datetime import datetime, timedelta
 import secrets
 from fastapi.responses import JSONResponse
-import requests
-
-# 🔔 уведомления
 from utils.notify import send_alert
 
 # ────────────────────────────────
-# 🔧 Конфигурация
+# ⚙️ Конфигурация
 # ────────────────────────────────
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 MASTER_KEY = os.getenv("MASTER_KEY")
 
 app = FastAPI()
+engine = create_engine(DATABASE_URL)
 
-# 🌍 CORS — конкретные домены
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://web-production-93a9e.up.railway.app",  # фронт
-        "https://web-production-310c7c.up.railway.app",  # api
+        "https://web-production-93a9e.up.railway.app",
+        "https://web-production-310c7c.up.railway.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-engine = create_engine(DATABASE_URL)
 
 LIGHT_PATTERNS = {
     "тень": ["full shade", "shade", "тень", "indirect", "diffused"],
@@ -42,21 +37,24 @@ LIGHT_PATTERNS = {
     "яркий": ["full sun", "sun", "прямое солнце", "яркий", "солнеч"],
 }
 
-COOLDOWN_DAYS = {"free": 1, "premium": 15, "supreme": 30}
-
 # ────────────────────────────────
 # 🌿 /plants
 # ────────────────────────────────
 @app.get("/plants")
 def get_plants(
+    request: Request,
     view: Optional[str] = Query(None),
     light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None),
     zone_usda: Optional[Literal["2","3","4","5","6","7","8","9","10","11","12"]] = Query(None),
     toxicity: Optional[Literal["none","mild","toxic"]] = Query(None),
     placement: Optional[Literal["комнатное","садовое"]] = Query(None),
     sort: Optional[Literal["id","random"]] = Query("random"),
-    limit: int = Query(50, ge=1, le=100)
+    limit: Optional[int] = Query(None, ge=1, le=100)
 ):
+    plan_cap = getattr(request.state, "max_page", None)
+    user_limit = limit if limit is not None else 50
+    applied_limit = min(user_limit, plan_cap) if plan_cap else user_limit
+
     query = "SELECT * FROM plants WHERE 1=1"
     params = {}
 
@@ -111,15 +109,15 @@ def get_plants(
 
     query += " ORDER BY RANDOM()" if sort == "random" else " ORDER BY id"
     query += " LIMIT :limit"
-    params["limit"] = limit
+    params["limit"] = applied_limit
 
     with engine.connect() as conn:
         result = conn.execute(text(query), params)
         plants = [dict(row._mapping) for row in result]
-    return {"count": len(plants), "limit": limit, "results": plants}
+    return {"count": len(plants), "limit": applied_limit, "results": plants}
 
 # ────────────────────────────────
-# 🔍 Остальные эндпоинты
+# 🌿 Прочие эндпоинты
 # ────────────────────────────────
 @app.get("/plant/{plant_id}")
 def get_plant(plant_id: int):
@@ -129,46 +127,22 @@ def get_plant(plant_id: int):
             raise HTTPException(status_code=404, detail="Plant not found")
     return dict(row._mapping)
 
-# ────────────────────────────────
-# 💳 Тарифные планы
-# ────────────────────────────────
 @app.get("/plans")
 def get_plans():
     with engine.connect() as conn:
-        result = conn.execute(text("""
-          SELECT id, name, price_rub AS price, limit_total, max_page
-          FROM plans
-          ORDER BY id
-        """))
+        result = conn.execute(text("SELECT id, name, price_rub AS price, limit_total, max_page FROM plans ORDER BY id"))
         plans = [dict(row._mapping) for row in result]
-
-    if not plans:
-        return {"plans": [], "message": "Нет доступных тарифов."}
     return {"plans": plans, "count": len(plans)}
-
-@app.get("/stats")
-def get_stats():
-    with engine.connect() as conn:
-        row = conn.execute(text("""
-            SELECT COUNT(*) AS total,
-                   COUNT(DISTINCT view) AS unique_views,
-                   COUNT(DISTINCT family) AS unique_families,
-                   SUM(CASE WHEN toxicity='toxic' THEN 1 ELSE 0 END) AS toxic_count,
-                   SUM(CASE WHEN beginner_friendly=true THEN 1 ELSE 0 END) AS beginner_friendly_count
-            FROM plants;
-        """)).fetchone()
-    return dict(row._mapping)
 
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
 # ────────────────────────────────
-# 🗝️ Генерация ключей
+# 🔐 Создание ключей
 # ────────────────────────────────
 @app.post("/generate_key")
 def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user", plan: str = "free"):
-    # 🔍 Отладочный вывод, чтобы проверить, что реально приходит
     print(f"[DEBUG] generate_api_key called with plan={plan}, owner={owner}, key={x_api_key}")
 
     if x_api_key != MASTER_KEY:
@@ -178,17 +152,10 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
     now = datetime.utcnow()
 
     with engine.begin() as conn:
-        # Деактивируем старые ключи этого пользователя
-        conn.execute(
-            text("UPDATE api_keys SET active=FALSE WHERE LOWER(owner)=:o AND active=TRUE"),
-            {"o": owner_norm},
-        )
-
-        # Генерируем новый ключ
+        conn.execute(text("UPDATE api_keys SET active=FALSE WHERE LOWER(owner)=:o AND active=TRUE"), {"o": owner_norm})
         new_key = secrets.token_hex(32)
         expires = now + timedelta(days=90) if plan == "free" else None
 
-        # Получаем лимиты из таблицы plans
         plan_limits = conn.execute(
             text("SELECT limit_total, max_page FROM plans WHERE LOWER(name)=LOWER(:p)"),
             {"p": plan}
@@ -197,89 +164,26 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
         limit_total = plan_limits.limit_total if plan_limits else None
         max_page = plan_limits.max_page if plan_limits else None
 
-        # Добавляем ключ в таблицу
         conn.execute(
-            text(
-                "INSERT INTO api_keys (api_key, owner, plan_name, expires_at, active, limit_total, max_page) "
-                "VALUES (:k, :o, :p, :e, TRUE, :lt, :mp)"
-            ),
-            {
-                "k": new_key,
-                "o": owner_norm,
-                "p": plan,
-                "e": expires,
-                "lt": limit_total,
-                "mp": max_page,
-            },
+            text("""
+                INSERT INTO api_keys (api_key, owner, plan_name, expires_at, active, limit_total, max_page)
+                VALUES (:k, :o, :p, :e, TRUE, :lt, :mp)
+            """),
+            {"k": new_key, "o": owner_norm, "p": plan, "e": expires, "lt": limit_total, "mp": max_page},
         )
 
-    return {
-        "api_key": new_key,
-        "plan": plan,
-        "limit_total": limit_total,
-        "max_page": max_page,
-        "expires_in_days": 90 if plan == "free" else None,
-    }
-
-# ────────────────────────────────
-# 🔐 Безопасный посредник /create_user_key
-# ────────────────────────────────
-@app.post("/create_user_key")
-async def create_user_key(request: Request):
-    try:
-        # Читаем параметр ?plan=premium из запроса
-        plan = request.query_params.get("plan", "free").strip().lower()
-        print(f"[DEBUG] create_user_key received plan={plan}")
-
-        # Вызываем внутреннюю функцию напрямую
-        result = generate_api_key(
-            x_api_key=MASTER_KEY,
-            owner="user",
-            plan=plan
-        )
-
-        return result
-
-    except Exception as e:
-        print(f"[ERROR] create_user_key failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ────────────────────────────────
-# 🧠 Middleware алертов
-# ────────────────────────────────
-@app.middleware("http")
-async def alert_5xx_middleware(request: Request, call_next):
-    try:
-        response = await call_next(request)
-        if 500 <= response.status_code < 600:
-            await send_alert(
-                event_type="server_error",
-                detail={"msg": "5xx response"},
-                user_key=request.headers.get("X-API-Key"),
-                endpoint=request.url.path,
-                status_code=response.status_code,
-            )
-        return response
-    except Exception as e:
-        await send_alert(
-            event_type="uncaught_exception",
-            detail={"error": str(e)},
-            user_key=request.headers.get("X-API-Key"),
-            endpoint=request.url.path,
-            status_code=500,
-        )
-        return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+    return {"api_key": new_key, "plan": plan, "limit_total": limit_total, "max_page": max_page}
 
 # ────────────────────────────────
 # 🧠 Middleware лимитов
 # ────────────────────────────────
 @app.middleware("http")
 async def verify_dynamic_api_key(request: Request, call_next):
-    # ✅ Разрешаем CORS-предзапросы без ключа
     if request.method == "OPTIONS":
         return await call_next(request)
 
-    open_paths = ["/docs", "/openapi.json", "/health", "/generate_key", "/create_user_key", "/_alert_test", "/favicon.ico", "/plans"]
+    open_paths = ["/docs", "/openapi.json", "/health", "/generate_key",
+                  "/create_user_key", "/_alert_test", "/favicon.ico", "/plans"]
     if any(request.url.path.rstrip("/").startswith(p.rstrip("/")) for p in open_paths):
         return await call_next(request)
 
@@ -289,7 +193,9 @@ async def verify_dynamic_api_key(request: Request, call_next):
 
     with engine.connect() as conn:
         row = conn.execute(text("""
-            SELECT k.active, k.expires_at, k.requests, k.plan_name, p.limit_total, p.max_page
+            SELECT k.active, k.expires_at, k.requests, k.plan_name,
+                   COALESCE(k.limit_total, p.limit_total) AS limit_total,
+                   COALESCE(k.max_page, p.max_page) AS max_page
             FROM api_keys k
             LEFT JOIN plans p ON LOWER(k.plan_name)=LOWER(p.name)
             WHERE k.api_key=:key
@@ -306,12 +212,8 @@ async def verify_dynamic_api_key(request: Request, call_next):
     if r["limit_total"] and r["requests"] >= r["limit_total"]:
         raise HTTPException(status_code=429, detail="Request limit exceeded")
 
-    if "limit" in request.query_params and r["max_page"]:
-        try:
-            if int(request.query_params["limit"]) > r["max_page"]:
-                raise HTTPException(status_code=400, detail=f"Max 'limit' for your plan is {r['max_page']}")
-        except ValueError:
-            pass
+    request.state.plan_name = r.get("plan_name")
+    request.state.max_page = r.get("max_page")
 
     response = await call_next(request)
     with engine.begin() as conn:
@@ -319,18 +221,49 @@ async def verify_dynamic_api_key(request: Request, call_next):
     return response
 
 # ────────────────────────────────
-# 🔔 Тестовый эндпоинт
+# 🧩 /create_user_key
 # ────────────────────────────────
-@app.get("/_alert_test")
-async def _alert_test(request: Request):
-    await send_alert(
-        "test",
-        {"msg": "Система активна"},
-        request.headers.get("X-API-Key"),
-        "/_alert_test",
-        200,
-    )
-    return {"ok": True}
+@app.post("/create_user_key")
+async def create_user_key(request: Request):
+    try:
+        data = {}
+        if request.headers.get("content-type", "").startswith("application/json"):
+            try:
+                data = await request.json()
+            except Exception:
+                data = {}
+        plan = request.query_params.get("plan") or data.get("plan") or "free"
+        plan = plan.strip().lower()
+        print(f"[DEBUG] create_user_key received plan={plan}")
+
+        result = generate_api_key(x_api_key=MASTER_KEY, owner="user", plan=plan)
+        return result
+
+    except Exception as e:
+        print(f"[ERROR] create_user_key failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ────────────────────────────────
+# 🩺 Alert middleware (для уведомлений)
+# ────────────────────────────────
+@app.middleware("http")
+async def alert_5xx_middleware(request: Request, call_next):
+    try:
+        response = await call_next(request)
+        if 500 <= response.status_code < 600:
+            await send_alert("server_error",
+                             {"msg": "5xx response"},
+                             request.headers.get("X-API-Key"),
+                             request.url.path,
+                             response.status_code)
+        return response
+    except Exception as e:
+        await send_alert("uncaught_exception",
+                         {"error": str(e)},
+                         request.headers.get("X-API-Key"),
+                         request.url.path,
+                         500)
+        return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
 
 # ────────────────────────────────
 # 📘 Swagger
@@ -340,8 +273,8 @@ def custom_openapi():
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="2.4.0",
-        description="GreenCore API — расширенный фильтр USDA (±1 зона), токсичность, тарифы и лимиты.",
+        version="2.4.1",
+        description="GreenCore API — корректные тарифы и лимиты (Free / Premium / Supreme).",
         routes=app.routes,
     )
     schema["components"] = {"securitySchemes": {
