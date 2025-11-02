@@ -175,21 +175,47 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
     now = datetime.utcnow()
 
     with engine.begin() as conn:
+        # Деактивируем старые ключи этого пользователя
         conn.execute(
             text("UPDATE api_keys SET active=FALSE WHERE LOWER(owner)=:o AND active=TRUE"),
             {"o": owner_norm},
         )
+
+        # Генерируем новый
         new_key = secrets.token_hex(32)
         expires = now + timedelta(days=90) if plan == "free" else None
+
+        # Получаем лимиты из таблицы plans
+        plan_limits = conn.execute(
+            text("SELECT limit_total, max_page FROM plans WHERE LOWER(name)=LOWER(:p)"),
+            {"p": plan}
+        ).fetchone()
+        limit_total = plan_limits.limit_total if plan_limits else None
+        max_page = plan_limits.max_page if plan_limits else None
+
+        # Записываем новый ключ вместе с лимитами
         conn.execute(
             text(
-                "INSERT INTO api_keys (api_key, owner, plan_name, expires_at, active) "
-                "VALUES (:k, :o, :p, :e, TRUE)"
+                "INSERT INTO api_keys (api_key, owner, plan_name, expires_at, active, limit_total, max_page) "
+                "VALUES (:k, :o, :p, :e, TRUE, :lt, :mp)"
             ),
-            {"k": new_key, "o": owner_norm, "p": plan, "e": expires},
+            {
+                "k": new_key,
+                "o": owner_norm,
+                "p": plan,
+                "e": expires,
+                "lt": limit_total,
+                "mp": max_page,
+            },
         )
 
-    return {"api_key": new_key, "plan": plan, "expires_in_days": 90 if plan == "free" else None}
+    return {
+        "api_key": new_key,
+        "plan": plan,
+        "limit_total": limit_total,
+        "max_page": max_page,
+        "expires_in_days": 90 if plan == "free" else None,
+    }
 
 # ────────────────────────────────
 # 🔐 Безопасный посредник /create_user_key
