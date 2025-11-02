@@ -168,8 +168,10 @@ def health_check():
 # ────────────────────────────────
 @app.post("/generate_key")
 def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user", plan: str = "free"):
-      print(f"[DEBUG] generate_api_key called with plan={plan}, owner={owner}, key={x_api_key}")
-          if x_api_key != MASTER_KEY:
+    # 🔍 Отладочный вывод, чтобы проверить, что реально приходит
+    print(f"[DEBUG] generate_api_key called with plan={plan}, owner={owner}, key={x_api_key}")
+
+    if x_api_key != MASTER_KEY:
         raise HTTPException(status_code=403, detail="Access denied: admin key required")
 
     owner_norm = owner.strip().lower()
@@ -182,7 +184,7 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
             {"o": owner_norm},
         )
 
-        # Генерируем новый
+        # Генерируем новый ключ
         new_key = secrets.token_hex(32)
         expires = now + timedelta(days=90) if plan == "free" else None
 
@@ -191,10 +193,11 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
             text("SELECT limit_total, max_page FROM plans WHERE LOWER(name)=LOWER(:p)"),
             {"p": plan}
         ).fetchone()
+
         limit_total = plan_limits.limit_total if plan_limits else None
         max_page = plan_limits.max_page if plan_limits else None
 
-        # Записываем новый ключ вместе с лимитами
+        # Добавляем ключ в таблицу
         conn.execute(
             text(
                 "INSERT INTO api_keys (api_key, owner, plan_name, expires_at, active, limit_total, max_page) "
