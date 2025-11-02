@@ -221,27 +221,21 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
 # 🔐 Безопасный посредник /create_user_key
 # ────────────────────────────────
 @app.post("/create_user_key")
-def create_user_key(plan: str = "free"):
-    if not MASTER_KEY:
-        raise HTTPException(status_code=500, detail="MASTER_KEY not configured")
-
-    api_base = os.getenv("API_BASE_URL", "https://web-production-310c7c.up.railway.app")
+def create_user_key(request: Request):
+    # Получаем тариф из query-параметров (например, ?plan=premium)
+    plan = request.query_params.get("plan", "free")
 
     try:
         resp = requests.post(
             f"{api_base}/generate_key",
             headers={"x-api-key": MASTER_KEY},
-            json={"plan": plan, "owner": "user"},
+            json={"plan": plan, "owner": "user"},  # Передаём план в generate_key
             timeout=10,
         )
         data = resp.json()
+        return data
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal request failed: {e}")
-
-    if not resp.ok:
-        raise HTTPException(status_code=resp.status_code, detail=data.get("detail") or data)
-
-    return {"api_key": data.get("api_key"), "plan": plan}
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ────────────────────────────────
 # 🧠 Middleware алертов
