@@ -225,16 +225,24 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
 # 🔐 Безопасный посредник /create_user_key
 # ────────────────────────────────
 @app.post("/create_user_key")
-def create_user_key(request: Request):
-    # читаем тариф из query параметров ?plan=premium
-    plan = request.query_params.get("plan", "free")
+async def create_user_key(request: Request):
+    try:
+        # Читаем параметр ?plan=premium из запроса
+        plan = request.query_params.get("plan", "free").strip().lower()
+        print(f"[DEBUG] create_user_key received plan={plan}")
 
-    # просто вызываем внутреннюю функцию без HTTP-запроса
-    return generate_api_key(
-        x_api_key=MASTER_KEY,
-        owner="user",
-        plan=plan
-    )
+        # Вызываем внутреннюю функцию напрямую
+        result = generate_api_key(
+            x_api_key=MASTER_KEY,
+            owner="user",
+            plan=plan
+        )
+
+        return result
+
+    except Exception as e:
+        print(f"[ERROR] create_user_key failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ────────────────────────────────
 # 🧠 Middleware алертов
