@@ -168,7 +168,8 @@ def health_check():
 # ────────────────────────────────
 @app.post("/generate_key")
 def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user", plan: str = "free"):
-    if x_api_key != MASTER_KEY:
+      print(f"[DEBUG] generate_api_key called with plan={plan}, owner={owner}, key={x_api_key}")
+          if x_api_key != MASTER_KEY:
         raise HTTPException(status_code=403, detail="Access denied: admin key required")
 
     owner_norm = owner.strip().lower()
