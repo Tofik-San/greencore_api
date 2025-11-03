@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 import secrets
 from fastapi.responses import JSONResponse
 from utils.notify import send_alert
+import uuid
+import requests
 
 # ────────────────────────────────
 # ⚙️ Конфигурация
@@ -16,6 +18,8 @@ from utils.notify import send_alert
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 MASTER_KEY = os.getenv("MASTER_KEY")
+YK_SHOP_ID = os.getenv("YK_SHOP_ID")
+YK_SECRET_KEY = os.getenv("YK_SECRET_KEY")
 
 app = FastAPI()
 engine = create_engine(DATABASE_URL)
@@ -175,6 +179,58 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
     return {"api_key": new_key, "plan": plan, "limit_total": limit_total, "max_page": max_page}
 
 # ────────────────────────────────
+# 💳 /api/payment/session — создание платежа
+# ────────────────────────────────
+@app.post("/api/payment/session")
+def create_payment_session(request: Request):
+    """Создание платежа в YooKassa и запись в pending_payments"""
+    data = request.query_params or {}
+    plan = data.get("plan", "free").lower()
+    email = data.get("email", "unknown@example.com")
+
+    if not YK_SHOP_ID or not YK_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="YooKassa credentials not set")
+
+    # Получаем цену тарифа
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT price_rub FROM plans WHERE LOWER(name)=:p"), {"p": plan}).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Plan not found")
+        amount_value = float(row.price_rub)
+
+    payment_body = {
+        "amount": {"value": f"{amount_value:.2f}", "currency": "RUB"},
+        "confirmation": {"type": "redirect", "return_url": "https://greencore.app/payment/success"},
+        "capture": True,
+        "description": f"GreenCore {plan.capitalize()} plan"
+    }
+
+    headers = {"Idempotence-Key": str(uuid.uuid4()), "Content-Type": "application/json"}
+
+    r = requests.post(
+        "https://api.yookassa.ru/v3/payments",
+        auth=(YK_SHOP_ID, YK_SECRET_KEY),
+        json=payment_body,
+        headers=headers
+    )
+
+    if r.status_code not in (200, 201):
+        print("[YooKassaError]", r.text)
+        raise HTTPException(status_code=500, detail=f"YooKassa error: {r.text}")
+
+    payment_data = r.json()
+    payment_id = payment_data["id"]
+    payment_url = payment_data["confirmation"]["confirmation_url"]
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO pending_payments (payment_id, plan_name, email, amount, status)
+            VALUES (:pid, :plan, :email, :amount, 'pending')
+        """), {"pid": payment_id, "plan": plan, "email": email, "amount": amount_value})
+
+    return {"payment_id": payment_id, "payment_url": payment_url}
+
+# ────────────────────────────────
 # 🧠 Middleware лимитов + логирование
 # ────────────────────────────────
 @app.middleware("http")
@@ -215,10 +271,8 @@ async def verify_dynamic_api_key(request: Request, call_next):
     request.state.plan_name = r.get("plan_name")
     request.state.max_page = r.get("max_page")
 
-    # выполняем запрос
     response = await call_next(request)
 
-    # обновляем счётчик и логируем запрос
     with engine.begin() as conn:
         conn.execute(text("UPDATE api_keys SET requests=requests+1 WHERE api_key=:key"), {"key": api_key})
         conn.execute(
@@ -245,7 +299,6 @@ async def create_user_key(request: Request):
         ip = request.client.host
         print(f"[DEBUG] create_user_key received plan={plan}, ip={ip}")
 
-        # ограничение на free ключи — 1 раз в 24 часа с одного IP
         if plan == "free":
             with engine.connect() as conn:
                 row = conn.execute(
@@ -294,8 +347,8 @@ def custom_openapi():
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="2.4.1",
-        description="GreenCore API — корректные тарифы, лимиты и логирование запросов.",
+        version="2.5.0",
+        description="GreenCore API — тарифы, логирование и интеграция YooKassa.",
         routes=app.routes,
     )
     schema["components"] = {"securitySchemes": {
