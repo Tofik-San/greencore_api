@@ -175,53 +175,7 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
     return {"api_key": new_key, "plan": plan, "limit_total": limit_total, "max_page": max_page}
 
 # ────────────────────────────────
-# 🧠 Middleware лимитов
-# ────────────────────────────────
-@app.middleware("http")
-async def verify_dynamic_api_key(request: Request, call_next):
-    if request.method == "OPTIONS":
-        return await call_next(request)
-
-    open_paths = ["/docs", "/openapi.json", "/health", "/generate_key",
-                  "/create_user_key", "/_alert_test", "/favicon.ico", "/plans"]
-    if any(request.url.path.rstrip("/").startswith(p.rstrip("/")) for p in open_paths):
-        return await call_next(request)
-
-    api_key = request.headers.get("X-API-Key")
-    if not api_key:
-        raise HTTPException(status_code=401, detail="Missing API key")
-
-    with engine.connect() as conn:
-        row = conn.execute(text("""
-            SELECT k.active, k.expires_at, k.requests, k.plan_name,
-                   COALESCE(k.limit_total, p.limit_total) AS limit_total,
-                   COALESCE(k.max_page, p.max_page) AS max_page
-            FROM api_keys k
-            LEFT JOIN plans p ON LOWER(k.plan_name)=LOWER(p.name)
-            WHERE k.api_key=:key
-        """), {"key": api_key}).fetchone()
-
-    if not row:
-        raise HTTPException(status_code=403, detail="Invalid API key")
-
-    r = row._mapping
-    if not r["active"]:
-        raise HTTPException(status_code=403, detail="Inactive API key")
-    if r["expires_at"] and r["expires_at"] < datetime.utcnow():
-        raise HTTPException(status_code=403, detail="API key expired")
-    if r["limit_total"] and r["requests"] >= r["limit_total"]:
-        raise HTTPException(status_code=429, detail="Request limit exceeded")
-
-    request.state.plan_name = r.get("plan_name")
-    request.state.max_page = r.get("max_page")
-
-    response = await call_next(request)
-    with engine.begin() as conn:
-        conn.execute(text("UPDATE api_keys SET requests=requests+1 WHERE api_key=:key"), {"key": api_key})
-    return response
-
-# ────────────────────────────────
-# 🧩 /create_user_key
+# 🧩 /create_user_key — защита для Free по IP
 # ────────────────────────────────
 @app.post("/create_user_key")
 async def create_user_key(request: Request):
@@ -234,11 +188,24 @@ async def create_user_key(request: Request):
                 data = {}
         plan = request.query_params.get("plan") or data.get("plan") or "free"
         plan = plan.strip().lower()
-        print(f"[DEBUG] create_user_key received plan={plan}")
+        ip = request.client.host
+        print(f"[DEBUG] create_user_key received plan={plan}, ip={ip}")
 
-        result = generate_api_key(x_api_key=MASTER_KEY, owner="user", plan=plan)
+        # ограничение на free ключи — 1 раз в 24 часа с одного IP
+        if plan == "free":
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text("SELECT created_at FROM api_keys WHERE plan_name='free' AND owner=:ip ORDER BY created_at DESC LIMIT 1"),
+                    {"ip": ip}
+                ).fetchone()
+            if row and (datetime.utcnow() - row._mapping["created_at"]) < timedelta(hours=24):
+                raise HTTPException(status_code=429, detail="Бесплатный ключ можно создавать не чаще одного раза в сутки.")
+
+        result = generate_api_key(x_api_key=MASTER_KEY, owner=ip, plan=plan)
         return result
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[ERROR] create_user_key failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
