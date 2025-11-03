@@ -175,7 +175,61 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
     return {"api_key": new_key, "plan": plan, "limit_total": limit_total, "max_page": max_page}
 
 # ────────────────────────────────
-# 🧩 /create_user_key — защита для Free по IP
+# 🧠 Middleware лимитов + логирование
+# ────────────────────────────────
+@app.middleware("http")
+async def verify_dynamic_api_key(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    open_paths = ["/docs", "/openapi.json", "/health", "/generate_key",
+                  "/create_user_key", "/_alert_test", "/favicon.ico", "/plans"]
+    if any(request.url.path.rstrip("/").startswith(p.rstrip("/")) for p in open_paths):
+        return await call_next(request)
+
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing API key")
+
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT k.active, k.expires_at, k.requests, k.plan_name,
+                   COALESCE(k.limit_total, p.limit_total) AS limit_total,
+                   COALESCE(k.max_page, p.max_page) AS max_page
+            FROM api_keys k
+            LEFT JOIN plans p ON LOWER(k.plan_name)=LOWER(p.name)
+            WHERE k.api_key=:key
+        """), {"key": api_key}).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+
+    r = row._mapping
+    if not r["active"]:
+        raise HTTPException(status_code=403, detail="Inactive API key")
+    if r["expires_at"] and r["expires_at"] < datetime.utcnow():
+        raise HTTPException(status_code=403, detail="API key expired")
+    if r["limit_total"] and r["requests"] >= r["limit_total"]:
+        raise HTTPException(status_code=429, detail="Request limit exceeded")
+
+    request.state.plan_name = r.get("plan_name")
+    request.state.max_page = r.get("max_page")
+
+    # выполняем запрос
+    response = await call_next(request)
+
+    # обновляем счётчик и логируем запрос
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE api_keys SET requests=requests+1 WHERE api_key=:key"), {"key": api_key})
+        conn.execute(
+            text("INSERT INTO api_logs (api_key, endpoint, status_code) VALUES (:k, :e, :s)"),
+            {"k": api_key, "e": request.url.path, "s": response.status_code}
+        )
+
+    return response
+
+# ────────────────────────────────
+# 🧩 /create_user_key — защита Free по IP
 # ────────────────────────────────
 @app.post("/create_user_key")
 async def create_user_key(request: Request):
@@ -211,7 +265,7 @@ async def create_user_key(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ────────────────────────────────
-# 🩺 Alert middleware (для уведомлений)
+# 🩺 Alert middleware
 # ────────────────────────────────
 @app.middleware("http")
 async def alert_5xx_middleware(request: Request, call_next):
@@ -241,7 +295,7 @@ def custom_openapi():
     schema = get_openapi(
         title="GreenCore API",
         version="2.4.1",
-        description="GreenCore API — корректные тарифы и лимиты (Free / Premium / Supreme).",
+        description="GreenCore API — корректные тарифы, лимиты и логирование запросов.",
         routes=app.routes,
     )
     schema["components"] = {"securitySchemes": {
