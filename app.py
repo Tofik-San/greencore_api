@@ -238,8 +238,10 @@ async def verify_dynamic_api_key(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
 
-    open_paths = ["/docs", "/openapi.json", "/health", "/generate_key",
-                  "/create_user_key", "/_alert_test", "/favicon.ico", "/plans"]
+    open_paths = ["/docs", "/openapi.json", "/health",
+                  "/generate_key", "/create_user_key",
+                  "/_alert_test", "/favicon.ico", "/plans",
+                  "/api/payment/session", "/api/payment/webhook"]
     if any(request.url.path.rstrip("/").startswith(p.rstrip("/")) for p in open_paths):
         return await call_next(request)
 
