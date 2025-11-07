@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
@@ -231,6 +231,54 @@ def create_payment_session(request: Request):
     return {"payment_id": payment_id, "payment_url": payment_url}
 
 # ────────────────────────────────
+# 💬 /api/payment/webhook — приём уведомлений от YooKassa
+# ────────────────────────────────
+@app.post("/api/payment/webhook")
+async def yookassa_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Приём уведомлений от YooKassa и обновление статусов платежей"""
+    try:
+        payload = await request.json()
+        event = payload.get("event")
+        payment_obj = payload.get("object", {})
+        payment_id = payment_obj.get("id")
+        status = payment_obj.get("status")
+
+        print(f"[YooKassaWebhook] event={event} status={status} id={payment_id}")
+
+        if not payment_id:
+            raise HTTPException(status_code=400, detail="Missing payment_id")
+
+        def update_status():
+            with engine.begin() as conn:
+                conn.execute(
+                    text("""
+                        UPDATE pending_payments
+                        SET status = :status, updated_at = NOW()
+                        WHERE payment_id = :pid
+                    """),
+                    {"status": status, "pid": payment_id},
+                )
+
+        background_tasks.add_task(update_status)
+
+        if event == "payment.succeeded":
+            background_tasks.add_task(
+                send_alert,
+                "payment_success",
+                {"payment_id": payment_id, "status": status},
+                None,
+                "/api/payment/webhook",
+                200,
+            )
+
+        return {"received": True}
+
+    except Exception as e:
+        print(f"[WebhookError] {e}")
+        await send_alert("webhook_error", {"error": str(e)}, None, "/api/payment/webhook", 500)
+        raise HTTPException(status_code=500, detail="Webhook error")
+
+# ────────────────────────────────
 # 🧠 Middleware лимитов + логирование
 # ────────────────────────────────
 @app.middleware("http")
@@ -349,7 +397,7 @@ def custom_openapi():
         return app.openapi_schema
     schema = get_openapi(
         title="GreenCore API",
-        version="2.5.0",
+        version="2.6.0",
         description="GreenCore API — тарифы, логирование и интеграция YooKassa.",
         routes=app.routes,
     )
