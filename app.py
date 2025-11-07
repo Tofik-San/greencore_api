@@ -182,6 +182,23 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
 
     return {"api_key": new_key, "plan": plan, "limit_total": limit_total, "max_page": max_page}
 
+# ────────────────────────────────
+# 🔑 Получение последнего выданного ключа по email
+# ────────────────────────────────
+@app.get("/api/payments/latest")
+def get_latest_payment(email: str):
+    """Возвращает последний сгенерированный API-ключ для указанного email"""
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT api_key
+            FROM pending_payments
+            WHERE email = :email AND api_key IS NOT NULL
+            ORDER BY paid_at DESC
+            LIMIT 1
+        """), {"email": email}).fetchone()
+    return {"api_key": row.api_key if row else None}
+
+
 
 # ────────────────────────────────
 # 💳 /api/payment/session — создание платежа
