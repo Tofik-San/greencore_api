@@ -144,6 +144,45 @@ def get_plans():
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+# ────────────────────────────────
+# 🆓 Создание бесплатного API-ключа без оплаты
+# ────────────────────────────────
+@app.post("/create_user_key")
+def create_user_key(plan: str = "free"):
+    import secrets
+    from datetime import datetime, timedelta
+
+    new_key = secrets.token_hex(32)
+    now = datetime.utcnow()
+    expires = now + timedelta(days=90)
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO api_keys (api_key, owner, plan_name, expires_at, active, limit_total, max_page)
+            VALUES (:k, 'guest', :p, :e, TRUE, 5, 5)
+        """), {"k": new_key, "p": plan, "e": expires})
+
+    return {"api_key": new_key, "plan": plan}
+# ────────────────────────────────
+# 🆓 Создание бесплатного API-ключа без оплаты
+# ────────────────────────────────
+@app.post("/create_user_key")
+def create_user_key(plan: str = "free"):
+    import secrets
+    from datetime import datetime, timedelta
+
+    new_key = secrets.token_hex(32)
+    now = datetime.utcnow()
+    expires = now + timedelta(days=90)
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO api_keys (api_key, owner, plan_name, expires_at, active, limit_total, max_page)
+            VALUES (:k, 'guest', :p, :e, TRUE, 5, 5)
+        """), {"k": new_key, "p": plan, "e": expires})
+
+    return {"api_key": new_key, "plan": plan}
+
 
 
 # ────────────────────────────────
