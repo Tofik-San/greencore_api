@@ -57,7 +57,10 @@ def get_plants(
 ):
     plan_cap = getattr(request.state, "max_page", None)
     user_limit = limit if limit is not None else 50
-    applied_limit = min(user_limit, plan_cap) if plan_cap else user_limit
+    if plan_cap and plan_cap < user_limit:
+        applied_limit = plan_cap
+    else:
+        applied_limit = user_limit
 
     query = "SELECT * FROM plants WHERE 1=1"
     params = {}
@@ -144,6 +147,45 @@ def get_plans():
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+# ────────────────────────────────
+# 🆓 Создание бесплатного API-ключа без оплаты
+# ────────────────────────────────
+@app.post("/create_user_key")
+def create_user_key(plan: str = "free"):
+    import secrets
+    from datetime import datetime, timedelta
+
+    new_key = secrets.token_hex(32)
+    now = datetime.utcnow()
+    expires = now + timedelta(days=90)
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO api_keys (api_key, owner, plan_name, expires_at, active, limit_total, max_page)
+            VALUES (:k, 'guest', :p, :e, TRUE, 5, 5)
+        """), {"k": new_key, "p": plan, "e": expires})
+
+    return {"api_key": new_key, "plan": plan}
+# ────────────────────────────────
+# 🆓 Создание бесплатного API-ключа без оплаты
+# ────────────────────────────────
+@app.post("/create_user_key")
+def create_user_key(plan: str = "free"):
+    import secrets
+    from datetime import datetime, timedelta
+
+    new_key = secrets.token_hex(32)
+    now = datetime.utcnow()
+    expires = now + timedelta(days=90)
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO api_keys (api_key, owner, plan_name, expires_at, active, limit_total, max_page)
+            VALUES (:k, 'guest', :p, :e, TRUE, 5, 5)
+        """), {"k": new_key, "p": plan, "e": expires})
+
+    return {"api_key": new_key, "plan": plan}
+
 
 
 # ────────────────────────────────
@@ -182,12 +224,30 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
 
     return {"api_key": new_key, "plan": plan, "limit_total": limit_total, "max_page": max_page}
 
+# ────────────────────────────────
+# 🔑 Получение последнего выданного ключа по email
+# ────────────────────────────────
+@app.get("/api/payments/latest")
+def get_latest_payment(email: str):
+    """Возвращает последний сгенерированный API-ключ для указанного email"""
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT api_key
+            FROM pending_payments
+            WHERE email = :email AND api_key IS NOT NULL
+            ORDER BY paid_at DESC
+            LIMIT 1
+        """), {"email": email}).fetchone()
+    return {"api_key": row.api_key if row else None}
+
+
 
 # ────────────────────────────────
 # 💳 /api/payment/session — создание платежа
 # ────────────────────────────────
 @app.post("/api/payment/session")
 def create_payment_session(request: Request):
+    """Создание платежа в YooKassa и запись в pending_payments"""
     data = request.query_params or {}
     plan = data.get("plan", "free").lower()
     email = data.get("email", "unknown@example.com")
@@ -203,9 +263,12 @@ def create_payment_session(request: Request):
 
     payment_body = {
         "amount": {"value": f"{amount_value:.2f}", "currency": "RUB"},
-        "confirmation": {"type": "redirect", "return_url": "https://web-production-310c7c.up.railway.app/payment/success"},
+        "confirmation": {
+            "type": "redirect",
+            "return_url": "https://web-production-93a9e.up.railway.app/payment/success",
+        },
         "capture": True,
-        "description": f"GreenCore {plan.capitalize()} plan"
+        "description": f"GreenCore {plan.capitalize()} plan",
     }
 
     headers = {"Idempotence-Key": str(uuid.uuid4()), "Content-Type": "application/json"}
@@ -214,7 +277,7 @@ def create_payment_session(request: Request):
         "https://api.yookassa.ru/v3/payments",
         auth=(YK_SHOP_ID, YK_SECRET_KEY),
         json=payment_body,
-        headers=headers
+        headers=headers,
     )
 
     if r.status_code not in (200, 201):
@@ -226,92 +289,106 @@ def create_payment_session(request: Request):
     payment_url = payment_data["confirmation"]["confirmation_url"]
 
     with engine.begin() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text(
+                """
             INSERT INTO pending_payments (payment_id, plan_name, email, amount, status)
             VALUES (:pid, :plan, :email, :amount, 'pending')
-        """), {"pid": payment_id, "plan": plan, "email": email, "amount": amount_value})
+        """
+            ),
+            {"pid": payment_id, "plan": plan, "email": email, "amount": amount_value},
+        )
 
     return {"payment_id": payment_id, "payment_url": payment_url}
 
 
 # ────────────────────────────────
-# 🧠 Middleware лимитов + логирование
+# 💬 /api/payment/webhook — уведомления от YooKassa + автогенерация ключа
 # ────────────────────────────────
-@app.middleware("http")
-async def verify_dynamic_api_key(request: Request, call_next):
-    if request.method == "OPTIONS":
-        return await call_next(request)
+@app.post("/api/payment/webhook")
+async def yookassa_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Приём уведомлений от YooKassa, обновление статуса и генерация API-ключа"""
+    try:
+        payload = await request.json()
+        event = payload.get("event")
+        payment_obj = payload.get("object", {})
+        payment_id = payment_obj.get("id")
+        status = payment_obj.get("status")
 
-    open_paths = [
-        "/docs", "/openapi.json", "/health",
-        "/generate_key", "/create_user_key",
-        "/plans",  # ✅ добавить сюда
-        "/api/payment/session", "/api/payment/webhook"
-    ]
-    if any(request.url.path.startswith(p) for p in open_paths):
-        return await call_next(request)
+        print(f"[YooKassaWebhook] event={event} status={status} id={payment_id}")
 
-    api_key = request.headers.get("X-API-Key")
-    if not api_key:
-        raise HTTPException(status_code=401, detail="Missing API key")
+        if not payment_id:
+            raise HTTPException(status_code=400, detail="Missing payment_id")
 
-    with engine.connect() as conn:
-        row = conn.execute(text("""
-            SELECT k.active, k.expires_at, k.requests, k.plan_name,
-                   COALESCE(k.limit_total, p.limit_total) AS limit_total,
-                   COALESCE(k.max_page, p.max_page) AS max_page
-            FROM api_keys k
-            LEFT JOIN plans p ON LOWER(k.plan_name)=LOWER(p.name)
-            WHERE k.api_key=:key
-        """), {"key": api_key}).fetchone()
+        def update_status_and_key():
+            with engine.begin() as conn:
+                # обновляем статус
+                conn.execute(
+                    text(
+                        """
+                        UPDATE pending_payments
+                        SET status = :status, updated_at = NOW()
+                        WHERE payment_id = :pid
+                        """
+                    ),
+                    {"status": status, "pid": payment_id},
+                )
 
-    if not row:
-        raise HTTPException(status_code=403, detail="Invalid API key")
+                # создаём ключ при успешной оплате
+                if status == "succeeded":
+                    row = conn.execute(
+                        text("SELECT plan_name, email FROM pending_payments WHERE payment_id=:pid"),
+                        {"pid": payment_id},
+                    ).fetchone()
 
-    r = row._mapping
-    if not r["active"]:
-        raise HTTPException(status_code=403, detail="Inactive API key")
-    if r["expires_at"] and r["expires_at"] < datetime.utcnow():
-        raise HTTPException(status_code=403, detail="API key expired")
-    if r["limit_total"] and r["requests"] >= r["limit_total"]:
-        raise HTTPException(status_code=429, detail="Request limit exceeded")
+                    if row:
+                        plan, email = row.plan_name, row.email
+                        new_key = secrets.token_hex(32)
 
-    print("[DEBUG]", r.get("plan_name"), r.get("limit_total"), r.get("max_page"))
+                        plan_limits = conn.execute(
+                            text("SELECT limit_total, max_page FROM plans WHERE LOWER(name)=LOWER(:p)"),
+                            {"p": plan},
+                        ).fetchone()
 
-    request.state.plan_name = r.get("plan_name")
-    request.state.max_page = r.get("max_page")
+                        lt = plan_limits.limit_total if plan_limits else None
+                        mp = plan_limits.max_page if plan_limits else None
 
-    response = await call_next(request)
+                        conn.execute(
+                            text(
+                                """
+                                INSERT INTO api_keys (api_key, owner, plan_name, active, limit_total, max_page)
+                                VALUES (:k, :o, :p, TRUE, :lt, :mp)
+                                """
+                            ),
+                            {"k": new_key, "o": email, "p": plan, "lt": lt, "mp": mp},
+                        )
 
-    with engine.begin() as conn:
-        conn.execute(text("UPDATE api_keys SET requests=requests+1 WHERE api_key=:key"), {"key": api_key})
-        conn.execute(
-            text("INSERT INTO api_logs (api_key, endpoint, status_code) VALUES (:k, :e, :s)"),
-            {"k": api_key, "e": request.url.path, "s": response.status_code}
-        )
+                        conn.execute(
+                            text(
+                                """
+                                UPDATE pending_payments
+                                SET api_key = :k, paid_at = NOW()
+                                WHERE payment_id = :pid
+                                """
+                            ),
+                            {"k": new_key, "pid": payment_id},
+                        )
 
-    return response
+        background_tasks.add_task(update_status_and_key)
 
+        if event == "payment.succeeded":
+            background_tasks.add_task(
+                send_alert,
+                "payment_success",
+                {"payment_id": payment_id, "status": status},
+                None,
+                "/api/payment/webhook",
+                200,
+            )
 
-# ────────────────────────────────
-# 📘 Swagger
-# ────────────────────────────────
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-    schema = get_openapi(
-        title="GreenCore API",
-        version="2.5.0",
-        description="GreenCore API — тарифы, логирование и интеграция YooKassa.",
-        routes=app.routes,
-    )
-    schema["components"] = {"securitySchemes": {
-        "APIKeyHeader": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
-    }}
-    for path in schema["paths"]:
-        for method in schema["paths"][path]:
-            schema["paths"][path][method]["security"] = [{"APIKeyHeader": []}]
-    app.openapi_schema = schema
-    return app.openapi_schema
+        return {"received": True}
 
-app.openapi = custom_openapi
+    except Exception as e:
+        print(f"[WebhookError] {e}")
+        await send_alert("webhook_error", {"error": str(e)}, None, "/api/payment/webhook", 500)
+        raise HTTPException(status_code=500, detail="Webhook error")
