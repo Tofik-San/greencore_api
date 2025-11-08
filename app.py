@@ -51,7 +51,7 @@ async def verify_dynamic_api_key(request: Request, call_next):
 
     open_paths = ["/docs", "/openapi.json", "/health", "/generate_key",
                   "/create_user_key", "/plans", "/api/payment/session",
-                  "/api/payment/webhook"]
+                  "/api/payment/webhook", "/api/payments/latest"]
 
     if any(request.url.path.rstrip("/").startswith(p.rstrip("/")) for p in open_paths):
         return await call_next(request)
