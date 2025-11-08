@@ -245,6 +245,7 @@ async def verify_dynamic_api_key(request: Request, call_next):
     open_paths = [
         "/docs", "/openapi.json", "/health",
         "/generate_key", "/create_user_key",
+        "/plans",  # ✅ добавить сюда
         "/api/payment/session", "/api/payment/webhook"
     ]
     if any(request.url.path.startswith(p) for p in open_paths):
