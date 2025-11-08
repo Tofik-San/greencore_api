@@ -55,9 +55,11 @@ def get_plants(
     sort: Optional[Literal["id","random"]] = Query("random"),
     limit: Optional[int] = Query(None, ge=1, le=100)
 ):
-    with engine.connect() as conn:
     key_header = request.headers.get("X-API-Key")
-    if key_header:
+    if not key_header:
+        raise HTTPException(status_code=401, detail="Missing API key")
+
+    with engine.connect() as conn:
         row = conn.execute(text("SELECT max_page FROM api_keys WHERE api_key=:k"), {"k": key_header}).fetchone()
         if row and row.max_page:
             request.state.max_page = row.max_page
@@ -65,10 +67,9 @@ def get_plants(
     plan_cap = getattr(request.state, "max_page", None)
     user_limit = limit if limit is not None else 50
     if plan_cap and plan_cap < user_limit:
-    applied_limit = plan_cap
-      else:
-    applied_limit = user_limit
-
+        applied_limit = plan_cap
+    else:
+        applied_limit = user_limit
 
     query = "SELECT * FROM plants WHERE 1=1"
     params = {}
@@ -155,6 +156,8 @@ def get_plans():
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
 # ────────────────────────────────
 # 🆓 Создание бесплатного API-ключа без оплаты
 # ────────────────────────────────
@@ -174,26 +177,6 @@ def create_user_key(plan: str = "free"):
         """), {"k": new_key, "p": plan, "e": expires})
 
     return {"api_key": new_key, "plan": plan}
-# ────────────────────────────────
-# 🆓 Создание бесплатного API-ключа без оплаты
-# ────────────────────────────────
-@app.post("/create_user_key")
-def create_user_key(plan: str = "free"):
-    import secrets
-    from datetime import datetime, timedelta
-
-    new_key = secrets.token_hex(32)
-    now = datetime.utcnow()
-    expires = now + timedelta(days=90)
-
-    with engine.begin() as conn:
-        conn.execute(text("""
-            INSERT INTO api_keys (api_key, owner, plan_name, expires_at, active, limit_total, max_page)
-            VALUES (:k, 'guest', :p, :e, TRUE, 5, 5)
-        """), {"k": new_key, "p": plan, "e": expires})
-
-    return {"api_key": new_key, "plan": plan}
-
 
 
 # ────────────────────────────────
@@ -232,6 +215,7 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
 
     return {"api_key": new_key, "plan": plan, "limit_total": limit_total, "max_page": max_page}
 
+
 # ────────────────────────────────
 # 🔑 Получение последнего выданного ключа по email
 # ────────────────────────────────
@@ -247,7 +231,6 @@ def get_latest_payment(email: str):
             LIMIT 1
         """), {"email": email}).fetchone()
     return {"api_key": row.api_key if row else None}
-
 
 
 # ────────────────────────────────
@@ -330,7 +313,6 @@ async def yookassa_webhook(request: Request, background_tasks: BackgroundTasks):
 
         def update_status_and_key():
             with engine.begin() as conn:
-                # обновляем статус
                 conn.execute(
                     text(
                         """
@@ -342,7 +324,6 @@ async def yookassa_webhook(request: Request, background_tasks: BackgroundTasks):
                     {"status": status, "pid": payment_id},
                 )
 
-                # создаём ключ при успешной оплате
                 if status == "succeeded":
                     row = conn.execute(
                         text("SELECT plan_name, email FROM pending_payments WHERE payment_id=:pid"),
