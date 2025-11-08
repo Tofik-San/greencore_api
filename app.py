@@ -130,6 +130,12 @@ def get_plants(
     with engine.connect() as conn:
         result = conn.execute(text(query), params)
         plants = [dict(row._mapping) for row in result]
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE api_keys SET requests = requests + 1 WHERE api_key = :k"),
+            {"k": key_header}
+        )
     return {"count": len(plants), "limit": applied_limit, "results": plants}
 
 
