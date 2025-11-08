@@ -138,7 +138,6 @@ def get_plants(
         )
     return {"count": len(plants), "limit": applied_limit, "results": plants}
 
-
 # ────────────────────────────────
 # 🌿 Прочие эндпоинты
 # ────────────────────────────────
@@ -150,7 +149,6 @@ def get_plant(plant_id: int):
             raise HTTPException(status_code=404, detail="Plant not found")
     return dict(row._mapping)
 
-
 @app.get("/plans")
 def get_plans():
     with engine.connect() as conn:
@@ -158,32 +156,35 @@ def get_plans():
         plans = [dict(row._mapping) for row in result]
     return {"plans": plans, "count": len(plans)}
 
-
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
-
 # ────────────────────────────────
-# 🆓 Создание бесплатного API-ключа без оплаты
+# 🆓 Создание бесплатного API-ключа с ограничением по IP (1 в сутки)
 # ────────────────────────────────
 @app.post("/create_user_key")
-def create_user_key(plan: str = "free"):
-    import secrets
-    from datetime import datetime, timedelta
+async def create_user_key(request: Request):
+    try:
+        ip = request.client.host
+        plan = request.query_params.get("plan", "free").strip().lower()
 
-    new_key = secrets.token_hex(32)
-    now = datetime.utcnow()
-    expires = now + timedelta(days=90)
+        if plan == "free":
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text("SELECT created_at FROM api_keys WHERE plan_name='free' AND owner=:ip ORDER BY created_at DESC LIMIT 1"),
+                    {"ip": ip}
+                ).fetchone()
+            if row and (datetime.utcnow() - row._mapping["created_at"]) < timedelta(hours=24):
+                raise HTTPException(status_code=429, detail="Бесплатный ключ можно создавать не чаще одного раза в сутки.")
 
-    with engine.begin() as conn:
-        conn.execute(text("""
-            INSERT INTO api_keys (api_key, owner, plan_name, expires_at, active, limit_total, max_page)
-            VALUES (:k, 'guest', :p, :e, TRUE, 5, 5)
-        """), {"k": new_key, "p": plan, "e": expires})
+        result = generate_api_key(x_api_key=MASTER_KEY, owner=ip, plan=plan)
+        return result
 
-    return {"api_key": new_key, "plan": plan}
-
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ────────────────────────────────
 # 🔐 Создание ключей
@@ -221,7 +222,6 @@ def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user"
 
     return {"api_key": new_key, "plan": plan, "limit_total": limit_total, "max_page": max_page}
 
-
 # ────────────────────────────────
 # 🔑 Получение последнего выданного ключа по email
 # ────────────────────────────────
@@ -237,7 +237,6 @@ def get_latest_payment(email: str):
             LIMIT 1
         """), {"email": email}).fetchone()
     return {"api_key": row.api_key if row else None}
-
 
 # ────────────────────────────────
 # 💳 /api/payment/session — создание платежа
@@ -297,7 +296,6 @@ def create_payment_session(request: Request):
         )
 
     return {"payment_id": payment_id, "payment_url": payment_url}
-
 
 # ────────────────────────────────
 # 💬 /api/payment/webhook — уведомления от YooKassa + автогенерация ключа
