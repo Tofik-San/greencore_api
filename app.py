@@ -55,12 +55,20 @@ def get_plants(
     sort: Optional[Literal["id","random"]] = Query("random"),
     limit: Optional[int] = Query(None, ge=1, le=100)
 ):
+    with engine.connect() as conn:
+    key_header = request.headers.get("X-API-Key")
+    if key_header:
+        row = conn.execute(text("SELECT max_page FROM api_keys WHERE api_key=:k"), {"k": key_header}).fetchone()
+        if row and row.max_page:
+            request.state.max_page = row.max_page
+
     plan_cap = getattr(request.state, "max_page", None)
     user_limit = limit if limit is not None else 50
     if plan_cap and plan_cap < user_limit:
-        applied_limit = plan_cap
-    else:
-        applied_limit = user_limit
+    applied_limit = plan_cap
+      else:
+    applied_limit = user_limit
+
 
     query = "SELECT * FROM plants WHERE 1=1"
     params = {}
