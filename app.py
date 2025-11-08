@@ -203,7 +203,7 @@ def create_payment_session(request: Request):
 
     payment_body = {
         "amount": {"value": f"{amount_value:.2f}", "currency": "RUB"},
-        "confirmation": {"type": "redirect", "return_url": "https://greencore.app/payment/success"},
+        "confirmation": {"type": "redirect", "return_url": "https://web-production-310c7c.up.railway.app/payment/success"},
         "capture": True,
         "description": f"GreenCore {plan.capitalize()} plan"
     }
