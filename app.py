@@ -20,6 +20,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 MASTER_KEY = os.getenv("MASTER_KEY")
 YK_SHOP_ID = os.getenv("YK_SHOP_ID")
 YK_SECRET_KEY = os.getenv("YK_SECRET_KEY")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://greencore.app")
+
 
 app = FastAPI()
 engine = create_engine(DATABASE_URL)
@@ -294,7 +296,7 @@ def create_payment_session(request: Request):
         "amount": {"value": f"{amount_value:.2f}", "currency": "RUB"},
         "confirmation": {
             "type": "redirect",
-            "return_url": "https://web-production-93a9e.up.railway.app/payment/success",
+            "return_url": f"{FRONTEND_URL}/payment/success",
         },
         "capture": True,
         "description": f"GreenCore {plan.capitalize()} plan",
