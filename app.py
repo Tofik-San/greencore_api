@@ -20,8 +20,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 MASTER_KEY = os.getenv("MASTER_KEY")
 YK_SHOP_ID = os.getenv("YK_SHOP_ID")
 YK_SECRET_KEY = os.getenv("YK_SECRET_KEY")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://greencore.app")
-
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://www.greencore-api.ru")
 
 app = FastAPI()
 engine = create_engine(DATABASE_URL)
@@ -31,6 +30,8 @@ app.add_middleware(
     allow_origins=[
         "https://web-production-93a9e.up.railway.app",
         "https://web-production-310c7c.up.railway.app",
+        "https://greencore-api.ru",
+        "https://www.greencore-api.ru"
     ],
     allow_credentials=True,
     allow_methods=["*"],
