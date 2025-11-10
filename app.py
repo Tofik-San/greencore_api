@@ -294,25 +294,14 @@ def create_payment_session(request: Request):
         amount_value = float(row.price_rub)
 
     payment_body = {
-    "amount": {"value": f"{amount_value:.2f}", "currency": "RUB"},
-    "confirmation": {
-        "type": "redirect",
-        "return_url": f"{FRONTEND_URL}/payment/success"
-    },
-    "capture": True,
-    "description": f"GreenCore {plan.capitalize()} plan",
-    "receipt": {
-        "customer": {"email": email},
-        "items": [
-            {
-                "description": f"GreenCore {plan.capitalize()} plan",
-                "quantity": "1.00",
-                "amount": {"value": f"{amount_value:.2f}", "currency": "RUB"},
-                "vat_code": 1
-             }
-         ]
-      }
-   }
+        "amount": {"value": f"{amount_value:.2f}", "currency": "RUB"},
+        "confirmation": {
+            "type": "redirect",
+            "return_url": f"{FRONTEND_URL}/payment/success",
+        },
+        "capture": True,
+        "description": f"GreenCore {plan.capitalize()} plan",
+    }
 
     headers = {"Idempotence-Key": str(uuid.uuid4()), "Content-Type": "application/json"}
 
