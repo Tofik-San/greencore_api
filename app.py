@@ -293,33 +293,26 @@ def create_payment_session(request: Request):
             raise HTTPException(status_code=404, detail="Plan not found")
         amount_value = float(row.price_rub)
 
-    elif plan_name in ["premium", "supreme"]:
-         if plan_name == "premium":
-            amount = 590.00
-    elif plan_name == "supreme":
-            amount = 2490.00
-
     payment_body = {
-        "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
-        "confirmation": {
-            "type": "redirect",
-            "return_url": "https://greencore-api.ru/payment/success"
-        },
-        "capture": True,
-        "description": f"{plan_name.capitalize()} plan — GreenCore API",
-        "receipt": {
-            "customer": {"email": email or "user@greencore.app"},
-            "items": [
-                {
-                    "description": f"План {plan_name.capitalize()} — доступ к GreenCore API",
-                    "quantity": "1.00",
-                    "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
-                    "vat_code": "1"
-                }
-            ]
-        }
+    "amount": {"value": f"{amount_value:.2f}", "currency": "RUB"},
+    "confirmation": {
+        "type": "redirect",
+        "return_url": f"{FRONTEND_URL}/payment/success"
+    },
+    "capture": True,
+    "description": f"GreenCore {plan.capitalize()} plan",
+    "receipt": {
+        "customer": {"email": email},
+        "items": [
+            {
+                "description": f"GreenCore {plan.capitalize()} plan",
+                "quantity": "1.00",
+                "amount": {"value": f"{amount_value:.2f}", "currency": "RUB"},
+                "vat_code": 1
+             }
+          ]
+       }
     }
-
 
 
     headers = {"Idempotence-Key": str(uuid.uuid4()), "Content-Type": "application/json"}
