@@ -105,6 +105,7 @@ def get_plants(
     zone_usda: Optional[Literal["2","3","4","5","6","7","8","9","10","11","12"]] = Query(None),
     toxicity: Optional[Literal["none","mild","toxic"]] = Query(None),
     placement: Optional[Literal["комнатное","садовое"]] = Query(None),
+    category: Optional[str] = Query(None),
     sort: Optional[Literal["id","random"]] = Query("random"),
     limit: Optional[int] = Query(None, ge=1, le=100)
 ):
@@ -163,6 +164,11 @@ def get_plants(
             query += " AND indoor = true"
         elif placement == "садовое":
             query += " AND outdoor = true"
+
+    if category:
+        query += " AND LOWER(filter_category) = :cat"
+        params["cat"] = category.lower()
+
 
     query += " ORDER BY RANDOM()" if sort == "random" else " ORDER BY id"
     query += " LIMIT :limit"

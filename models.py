@@ -25,6 +25,7 @@ class Plant(Base):
     ru_regions = Column(String)
     cultivar_status = Column(String)
     filter_light = Column(String)
+    filter_category = Column(String)
     filter_temperature = Column(String)
     filter_toxicity = Column(String)
     filter_zone_usda = Column(String)
