@@ -55,28 +55,33 @@ async def verify_dynamic_api_key(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
 
-    open_paths = ["/docs", "/openapi.json", "/health", "/generate_key",
-                  "/create_user_key", "/plans", "/api/payment/session",
-                  "/api/payment/webhook", "/api/payments/latest"]
+    open_paths = [
+        "/docs",
+        "/openapi.json",
+        "/health",
+        "/generate_key",
+        "/create_user_key",
+        "/plans",
+        "/api/payment/session",
+        "/api/payment/webhook",
+        "/api/payments/latest",
+    ]
 
-    if any(request.url.path.rstrip("/").startswith(p.rstrip("/")) for p in open_paths):
+    # 🔓 Auth endpoints — всегда публичные
+    if request.url.path.startswith("/auth"):
+        return await call_next(request)
+
+    if any(
+        request.url.path.rstrip("/").startswith(p.rstrip("/"))
+        for p in open_paths
+    ):
         return await call_next(request)
 
     api_key = request.headers.get("X-API-Key")
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing API key")
 
-    with engine.connect() as conn:
-        row = conn.execute(text("""
-            SELECT active, expires_at, requests, plan_name,
-                   COALESCE(limit_total, 0) AS limit_total,
-                   COALESCE(max_page, 50) AS max_page
-            FROM api_keys
-            WHERE api_key=:key
-        """), {"key": api_key}).fetchone()
-
-    if not row:
-        raise HTTPException(status_code=403, detail="Invalid API key")
+    # дальше твоя логика
 
     r = row._mapping
     if not r["active"]:
