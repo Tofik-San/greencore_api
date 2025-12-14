@@ -116,14 +116,13 @@ def get_plants(
         params["view"] = f"%{view.lower()}%"
 
     if light:
-        pats = LIGHT_PATTERNS.get(light, [])
-        if pats:
-            clauses = []
-            for i, pat in enumerate(pats):
-                key = f"light_{i}"
-                clauses.append(f"LOWER(light) LIKE :{key}")
-                params[key] = f"%{pat.lower()}%"
-            query += " AND (" + " OR ".join(clauses) + ")"
+    query += " AND filter_light = :light"
+    params["light"] = {
+        "яркий": "high",
+        "полутень": "medium",
+        "тень": "low",
+    }.get(light)
+
 
     if zone_usda:
         z_input = zone_usda.strip()
