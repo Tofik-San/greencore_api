@@ -14,7 +14,7 @@ def send_login_email(email: str, token: str):
             "Content-Type": "application/json",
         },
         json={
-            "from": "GreenCore <onboarding@resend.dev>",
+            "from": "GreenCore <auth@greencore-api.ru>",
             "to": [email],
             "subject": "Код входа GreenCore",
             "html": f"""
