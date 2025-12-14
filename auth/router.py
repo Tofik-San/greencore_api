@@ -8,9 +8,7 @@ import os
 from database import engine
 from .service import send_login_email
 
-
 router = APIRouter(prefix="/auth", tags=["auth"])
-
 
 # ===== MODELS =====
 
@@ -47,6 +45,11 @@ def assert_smtp_env():
 
 # ===== ROUTES =====
 
+@router.get("/health")
+def auth_health():
+    return {"status": "auth module ready"}
+
+
 @router.post("/request-login")
 def request_login(payload: LoginRequest):
     email = payload.email.lower()
@@ -56,38 +59,33 @@ def request_login(payload: LoginRequest):
     assert_smtp_env()
 
     with engine.begin() as conn:
-        # user: get or create
+        # user upsert
         user = conn.execute(
             text("SELECT id FROM users WHERE email = :email"),
             {"email": email},
         ).fetchone()
 
-        if not user:
-            user = conn.execute(
-                text(
-                    """
-                    INSERT INTO users (email, plan_name)
-                    VALUES (:email, 'free')
+        if user:
+            user_id = user.id
+        else:
+            user_id = conn.execute(
+                text("""
+                    INSERT INTO users (email, plan_name, created_at)
+                    VALUES (:email, 'free', now())
                     RETURNING id
-                    """
-                ),
+                """),
                 {"email": email},
-            ).fetchone()
+            ).scalar_one()
 
-        user_id = user.id
-
-        # insert login token
         conn.execute(
-            text(
-                """
-                INSERT INTO auth_tokens (user_id, token, expires_at)
-                VALUES (:uid, :token, :expires_at)
-                """
-            ),
+            text("""
+                INSERT INTO auth_tokens (user_id, token, expires_at, used)
+                VALUES (:uid, :token, :expires, false)
+            """),
             {
                 "uid": user_id,
                 "token": token,
-                "expires_at": expires_at,
+                "expires": expires_at,
             },
         )
 
@@ -95,7 +93,7 @@ def request_login(payload: LoginRequest):
 
     return {
         "status": "ok",
-        "message": "login_token_sent",
+        "message": "login link sent",
         "expires_in_sec": 900,
     }
 
@@ -106,11 +104,10 @@ def verify_login_token(payload: VerifyToken):
 
     with engine.begin() as conn:
         row = conn.execute(
-            text(
-                """
+            text("""
                 SELECT
-                    t.id   AS token_id,
-                    u.id   AS user_id,
+                    t.id AS token_id,
+                    u.id AS user_id,
                     u.api_key
                 FROM auth_tokens t
                 JOIN users u ON u.id = t.user_id
@@ -118,24 +115,20 @@ def verify_login_token(payload: VerifyToken):
                   AND t.used = false
                   AND t.expires_at > now()
                 LIMIT 1
-                """
-            ),
+            """),
             {"token": token},
         ).mappings().first()
 
         if not row:
-            raise HTTPException(
-                status_code=400,
-                detail="invalid_or_expired_token",
-            )
+            raise HTTPException(status_code=400, detail="invalid_or_expired_token")
 
-        # mark token as used
+        # mark token used
         conn.execute(
             text("UPDATE auth_tokens SET used = true WHERE id = :tid"),
             {"tid": row["token_id"]},
         )
 
-        # update last login
+        # update last_login
         conn.execute(
             text("UPDATE users SET last_login = now() WHERE id = :uid"),
             {"uid": row["user_id"]},
@@ -143,13 +136,10 @@ def verify_login_token(payload: VerifyToken):
 
         api_key = row["api_key"]
 
-        # generate api_key on first login
         if not api_key:
             api_key = secrets.token_hex(32)
             conn.execute(
-                text(
-                    "UPDATE users SET api_key = :k WHERE id = :uid"
-                ),
+                text("UPDATE users SET api_key = :k WHERE id = :uid"),
                 {"k": api_key, "uid": row["user_id"]},
             )
 
