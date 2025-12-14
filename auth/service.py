@@ -1,7 +1,9 @@
 import secrets
+from datetime import datetime, timedelta
 
-def generate_code() -> str:
-    return str(secrets.randbelow(900000) + 100000)  # 6 цифр
+def generate_login_token() -> str:
+    # криптостойкий, URL-safe
+    return secrets.token_urlsafe(24)
 
-def generate_session_token() -> str:
-    return secrets.token_hex(32)
+def ttl_minutes(minutes: int = 15) -> datetime:
+    return datetime.utcnow() + timedelta(minutes=minutes)

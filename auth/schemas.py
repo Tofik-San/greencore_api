@@ -1,8 +1,7 @@
 from pydantic import BaseModel, EmailStr
 
-class EmailAuthRequest(BaseModel):
+class RequestLogin(BaseModel):
     email: EmailStr
 
-class EmailAuthVerify(BaseModel):
-    email: EmailStr
-    code: str
+class VerifyToken(BaseModel):
+    token: str  # одноразовый токен входа
