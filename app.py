@@ -116,11 +116,11 @@ def get_plants(
         params["view"] = f"%{view.lower()}%"
 
     if light:
-    query += " AND filter_light = :light"
-    params["light"] = {
-        "яркий": "high",
-        "полутень": "medium",
-        "тень": "low",
+        query += " AND filter_light = :light"
+        params["light"] = {
+            "яркий": "high",
+            "полутень": "medium",
+            "тень": "low",
     }.get(light)
 
 
