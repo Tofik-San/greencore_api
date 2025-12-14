@@ -251,37 +251,72 @@ async def create_user_key(request: Request):
 # 🔐 Создание ключей
 # ────────────────────────────────
 @app.post("/generate_key")
-def generate_api_key(x_api_key: str = Header(...), owner: Optional[str] = "user", plan: str = "free"):
-    print(f"[DEBUG] generate_api_key called with plan={plan}, owner={owner}, key={x_api_key}")
+def generate_api_key(
+    x_api_key: str = Header(...),
+    owner: Optional[str] = "user",
+    plan: str = "free"
+):
+    print(f"[DEBUG] generate_api_key called with plan={plan}, owner={owner}")
 
     if x_api_key != MASTER_KEY:
         raise HTTPException(status_code=403, detail="Access denied: admin key required")
 
     owner_norm = owner.strip().lower()
     now = datetime.utcnow()
+    new_key = secrets.token_hex(32)
+    expires = now + timedelta(days=90) if plan == "free" else None
 
     with engine.begin() as conn:
-        conn.execute(text("UPDATE api_keys SET active=FALSE WHERE LOWER(owner)=:o AND active=TRUE"), {"o": owner_norm})
-        new_key = secrets.token_hex(32)
-        expires = now + timedelta(days=90) if plan == "free" else None
-
         plan_limits = conn.execute(
-            text("SELECT limit_total, max_page FROM plans WHERE LOWER(name)=LOWER(:p)"),
+            text("""
+                SELECT limit_total, max_page
+                FROM plans
+                WHERE LOWER(name) = LOWER(:p)
+            """),
             {"p": plan}
-        ).fetchone()
+        ).mappings().first()
 
-        limit_total = plan_limits.limit_total if plan_limits else None
-        max_page = plan_limits.max_page if plan_limits else None
+        limit_total = plan_limits["limit_total"] if plan_limits else None
+        max_page = plan_limits["max_page"] if plan_limits else None
 
         conn.execute(
             text("""
-                INSERT INTO api_keys (api_key, owner, plan_name, expires_at, active, limit_total, max_page)
-                VALUES (:k, :o, :p, :e, TRUE, :lt, :mp)
+                INSERT INTO api_keys (
+                    api_key,
+                    owner,
+                    plan_name,
+                    expires_at,
+                    active,
+                    limit_total,
+                    max_page
+                )
+                VALUES (
+                    :k,
+                    :o,
+                    :p,
+                    :e,
+                    TRUE,
+                    :lt,
+                    :mp
+                )
             """),
-            {"k": new_key, "o": owner_norm, "p": plan, "e": expires, "lt": limit_total, "mp": max_page},
+            {
+                "k": new_key,
+                "o": owner_norm,
+                "p": plan,
+                "e": expires,
+                "lt": limit_total,
+                "mp": max_page,
+            },
         )
 
-    return {"api_key": new_key, "plan": plan, "limit_total": limit_total, "max_page": max_page}
+    return {
+        "api_key": new_key,
+        "plan": plan,
+        "limit_total": limit_total,
+        "max_page": max_page,
+    }
+
 
 # ────────────────────────────────
 # 🔑 Получение последнего выданного ключа по email
