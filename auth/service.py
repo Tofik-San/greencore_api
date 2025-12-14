@@ -1,37 +1,32 @@
 import os
-import smtplib
-from email.message import EmailMessage
+import requests
 
-SMTP_HOST = os.getenv("SMTP_HOST")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-SMTP_USER = os.getenv("SMTP_USER")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-MAIL_FROM = os.getenv("MAIL_FROM")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 
+def send_login_email(email: str, token: str):
+    if not RESEND_API_KEY:
+        raise RuntimeError("RESEND_API_KEY not set")
 
-def send_login_email(to_email: str, login_token: str):
-    if not all([SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, MAIL_FROM]):
-        raise RuntimeError("SMTP env vars not configured")
-
-    msg = EmailMessage()
-    msg["From"] = MAIL_FROM
-    msg["To"] = to_email
-    msg["Subject"] = "GreenCore — вход в аккаунт"
-
-    msg.set_content(
-        f"""
-Здравствуйте!
-
-Для входа в GreenCore используйте код:
-
-{login_token}
-
-Код действует 15 минут.
-Если вы не запрашивали вход — просто проигнорируйте это письмо.
-"""
+    r = requests.post(
+        "https://api.resend.com/emails",
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "from": "GreenCore <onboarding@resend.dev>",
+            "to": [email],
+            "subject": "Код входа GreenCore",
+            "html": f"""
+            <div>
+                <p>Ваш код входа:</p>
+                <h2>{token}</h2>
+                <p>Код действует 15 минут.</p>
+            </div>
+            """,
+        },
+        timeout=10,
     )
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.send_message(msg)
+    if r.status_code >= 300:
+        raise RuntimeError(f"Resend error: {r.text}")

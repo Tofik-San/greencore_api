@@ -3,7 +3,6 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import text
 from datetime import datetime, timedelta
 import secrets
-import os
 
 from database import engine
 from .service import send_login_email
@@ -30,19 +29,6 @@ def ttl_minutes(minutes: int) -> datetime:
     return datetime.utcnow() + timedelta(minutes=minutes)
 
 
-def assert_smtp_env():
-    required = [
-        "SMTP_HOST",
-        "SMTP_PORT",
-        "SMTP_USER",
-        "SMTP_PASSWORD",
-        "MAIL_FROM",
-    ]
-    missing = [v for v in required if not os.getenv(v)]
-    if missing:
-        raise RuntimeError(f"SMTP env missing: {', '.join(missing)}")
-
-
 # ===== ROUTES =====
 
 @router.get("/health")
@@ -55,8 +41,6 @@ def request_login(payload: LoginRequest):
     email = payload.email.lower()
     token = generate_login_token()
     expires_at = ttl_minutes(15)
-
-    assert_smtp_env()
 
     with engine.begin() as conn:
         # user upsert
@@ -89,11 +73,12 @@ def request_login(payload: LoginRequest):
             },
         )
 
+    # отправка письма через Resend
     send_login_email(email, token)
 
     return {
         "status": "ok",
-        "message": "login link sent",
+        "message": "login code sent",
         "expires_in_sec": 900,
     }
 
