@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 import secrets
 from fastapi.responses import JSONResponse
 from utils.notify import send_alert
-from auth.router import router as auth_router
 import uuid
 import requests
 
@@ -24,7 +23,6 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "https://www.greencore-api.ru")
 
 app = FastAPI()
 engine = create_engine(DATABASE_URL)
-app.include_router(auth_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,7 +44,7 @@ LIGHT_PATTERNS = {
 }
 
 # ────────────────────────────────
-# 🧠 Middleware проверки ключа и лимитов
+# 🧠 Middleware проверки API-ключа
 # ────────────────────────────────
 @app.middleware("http")
 async def verify_dynamic_api_key(request: Request, call_next):
@@ -58,15 +56,12 @@ async def verify_dynamic_api_key(request: Request, call_next):
         "/openapi.json",
         "/health",
         "/plans",
-        "/generate_key",
         "/create_user_key",
+        "/generate_key",
         "/api/payment/session",
         "/api/payment/webhook",
         "/api/payments/latest",
     ]
-
-    if request.url.path.startswith("/auth"):
-        return await call_next(request)
 
     if any(request.url.path.rstrip("/").startswith(p.rstrip("/")) for p in open_paths):
         return await call_next(request)
@@ -78,10 +73,9 @@ async def verify_dynamic_api_key(request: Request, call_next):
     with engine.connect() as conn:
         row = conn.execute(
             text("""
-                SELECT active, expires_at, limit_total, requests, max_page
+                SELECT active, expires_at, requests, limit_total, max_page
                 FROM api_keys
                 WHERE api_key = :key
-                LIMIT 1
             """),
             {"key": api_key},
         ).mappings().first()
@@ -119,128 +113,229 @@ def get_plants(
     request: Request,
     view: Optional[str] = Query(None),
     light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None),
-    zone_usda: Optional[Literal["2","3","4","5","6","7","8","9","10","11","12"]] = Query(None),
-    toxicity: Optional[Literal["none","mild","toxic"]] = Query(None),
-    placement: Optional[Literal["комнатное","садовое"]] = Query(None),
-    category: Optional[str] = Query(None),
-    sort: Optional[Literal["id","random"]] = Query("random"),
-    limit: Optional[int] = Query(None, ge=1, le=100)
+    toxicity: Optional[Literal["none", "mild", "toxic"]] = Query(None),
+    placement: Optional[Literal["комнатное", "садовое"]] = Query(None),
+    sort: Optional[Literal["id", "random"]] = Query("random"),
+    limit: Optional[int] = Query(None, ge=1, le=100),
 ):
     plan_cap = getattr(request.state, "max_page", None)
-    user_limit = limit if limit is not None else 50
-    applied_limit = min(user_limit, plan_cap) if plan_cap else user_limit
+    applied_limit = min(limit or 50, plan_cap) if plan_cap else (limit or 50)
 
     query = "SELECT * FROM plants WHERE 1=1"
     params = {}
 
     if view:
-        query += " AND (LOWER(view) LIKE :view OR LOWER(cultivar) LIKE :view)"
-        params["view"] = f"%{view.lower()}%"
+        query += " AND LOWER(view) LIKE :v"
+        params["v"] = f"%{view.lower()}%"
 
-    if light:
-        pats = LIGHT_PATTERNS.get(light, [])
-        clauses = []
-        for i, pat in enumerate(pats):
-            key = f"light_{i}"
-            clauses.append(f"LOWER(light) LIKE :{key}")
-            params[key] = f"%{pat.lower()}%"
-        if clauses:
-            query += " AND (" + " OR ".join(clauses) + ")"
+    if toxicity:
+        query += " AND toxicity = :t"
+        params["t"] = toxicity
 
     if placement == "комнатное":
         query += " AND indoor = true"
     elif placement == "садовое":
         query += " AND outdoor = true"
 
-    if category:
-        query += " AND LOWER(filter_category) = :cat"
-        params["cat"] = category.lower()
-
     query += " ORDER BY RANDOM()" if sort == "random" else " ORDER BY id"
     query += " LIMIT :limit"
     params["limit"] = applied_limit
 
     with engine.connect() as conn:
-        result = conn.execute(text(query), params)
-        plants = [dict(row._mapping) for row in result]
-
-    return {"count": len(plants), "limit": applied_limit, "results": plants}
+        rows = conn.execute(text(query), params)
+        return {"count": rows.rowcount, "results": [dict(r._mapping) for r in rows]}
 
 # ────────────────────────────────
-# 💬 /api/payment/webhook — ИДЕМПОТЕНТНЫЙ
+# ❤️ health
+# ────────────────────────────────
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+# ────────────────────────────────
+# 📦 планы
+# ────────────────────────────────
+@app.get("/plans")
+def get_plans():
+    with engine.connect() as conn:
+        rows = conn.execute(text("SELECT name, price_rub, limit_total, max_page FROM plans"))
+        return {"plans": [dict(r._mapping) for r in rows]}
+
+# ────────────────────────────────
+# 🆓 FREE / PAID — создание ключа по EMAIL
+# ────────────────────────────────
+@app.post("/create_user_key")
+def create_user_key(email: str, plan: str = "free"):
+    email = email.strip().lower()
+
+    if plan == "free":
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("""
+                    SELECT created_at FROM api_keys
+                    WHERE plan_name='free' AND owner_email=:e
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                """),
+                {"e": email},
+            ).fetchone()
+
+        if row and (datetime.utcnow() - row._mapping["created_at"]) < timedelta(hours=24):
+            raise HTTPException(status_code=429, detail="Free key only once per 24h")
+
+    return generate_api_key(MASTER_KEY, owner=email, plan=plan)
+
+# ────────────────────────────────
+# 🔐 ADMIN генерация ключа
+# ────────────────────────────────
+@app.post("/generate_key")
+def generate_api_key(
+    x_api_key: str = Header(...),
+    owner: str = "user",
+    plan: str = "free",
+):
+    if x_api_key != MASTER_KEY:
+        raise HTTPException(status_code=403, detail="Admin key required")
+
+    owner = owner.strip().lower()
+    now = datetime.utcnow()
+    expires = now + timedelta(days=90) if plan == "free" else None
+
+    with engine.begin() as conn:
+        key = secrets.token_hex(32)
+
+        limits = conn.execute(
+            text("SELECT limit_total, max_page FROM plans WHERE LOWER(name)=LOWER(:p)"),
+            {"p": plan},
+        ).fetchone()
+
+        conn.execute(
+            text("""
+                INSERT INTO api_keys
+                (api_key, owner, owner_email, plan_name, active, expires_at, limit_total, max_page, source)
+                VALUES
+                (:k, :o, :e, :p, TRUE, :ex, :lt, :mp, :src)
+            """),
+            {
+                "k": key,
+                "o": owner,
+                "e": owner,
+                "p": plan,
+                "ex": expires,
+                "lt": limits.limit_total if limits else None,
+                "mp": limits.max_page if limits else None,
+                "src": "free" if plan == "free" else "payment",
+            },
+        )
+
+    return {"api_key": key, "plan": plan}
+
+# ────────────────────────────────
+# 💳 YooKassa session
+# ────────────────────────────────
+@app.post("/api/payment/session")
+def create_payment_session(email: str, plan: str):
+    email = email.lower()
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT price_rub FROM plans WHERE LOWER(name)=LOWER(:p)"),
+            {"p": plan},
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Plan not found")
+
+    payment_body = {
+        "amount": {"value": f"{row.price_rub:.2f}", "currency": "RUB"},
+        "confirmation": {"type": "redirect", "return_url": f"{FRONTEND_URL}/payment/success"},
+        "capture": True,
+        "description": f"GreenCore {plan}",
+        "receipt": {"customer": {"email": email}},
+    }
+
+    r = requests.post(
+        "https://api.yookassa.ru/v3/payments",
+        auth=(YK_SHOP_ID, YK_SECRET_KEY),
+        json=payment_body,
+        headers={"Idempotence-Key": str(uuid.uuid4())},
+    )
+
+    payment = r.json()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO pending_payments (payment_id, plan_name, email, amount, status)
+                VALUES (:pid, :p, :e, :a, 'pending')
+            """),
+            {
+                "pid": payment["id"],
+                "p": plan,
+                "e": email,
+                "a": row.price_rub,
+            },
+        )
+
+    return {"payment_url": payment["confirmation"]["confirmation_url"]}
+
+# ────────────────────────────────
+# 💬 YooKassa webhook (идемпотентный)
 # ────────────────────────────────
 @app.post("/api/payment/webhook")
-async def yookassa_webhook(request: Request, background_tasks: BackgroundTasks):
-    try:
-        payload = await request.json()
-        payment = payload.get("object", {})
-        payment_id = payment.get("id")
-        status = payment.get("status")
+async def yookassa_webhook(request: Request):
+    payload = await request.json()
+    payment = payload.get("object", {})
+    payment_id = payment.get("id")
+    status = payment.get("status")
 
-        if not payment_id:
-            raise HTTPException(status_code=400, detail="Missing payment_id")
+    if not payment_id:
+        return {"ignored": True}
 
-        def update_status_and_key():
-            with engine.begin() as conn:
-                row = conn.execute(
-                    text("""
-                        SELECT plan_name, email, api_key
-                        FROM pending_payments
-                        WHERE payment_id = :pid
-                        FOR UPDATE
-                    """),
-                    {"pid": payment_id},
-                ).mappings().first()
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("""
+                SELECT plan_name, email, api_key
+                FROM pending_payments
+                WHERE payment_id=:pid
+                FOR UPDATE
+            """),
+            {"pid": payment_id},
+        ).mappings().first()
 
-                if not row:
-                    return
+        if not row:
+            return {"ignored": True}
 
-                conn.execute(
-                    text("""
-                        UPDATE pending_payments
-                        SET status = :status, updated_at = NOW()
-                        WHERE payment_id = :pid
-                    """),
-                    {"status": status, "pid": payment_id},
-                )
+        if status == "succeeded" and row["api_key"] is None:
+            key = secrets.token_hex(32)
 
-                if status != "succeeded" or row["api_key"] is not None:
-                    return
+            limits = conn.execute(
+                text("SELECT limit_total, max_page FROM plans WHERE LOWER(name)=LOWER(:p)"),
+                {"p": row["plan_name"]},
+            ).fetchone()
 
-                plan, email = row["plan_name"], row["email"]
-                new_key = secrets.token_hex(32)
+            conn.execute(
+                text("""
+                    INSERT INTO api_keys
+                    (api_key, owner, owner_email, plan_name, active, limit_total, max_page, source)
+                    VALUES (:k, :o, :e, :p, TRUE, :lt, :mp, 'payment')
+                """),
+                {
+                    "k": key,
+                    "o": row["email"],
+                    "e": row["email"],
+                    "p": row["plan_name"],
+                    "lt": limits.limit_total if limits else None,
+                    "mp": limits.max_page if limits else None,
+                },
+            )
 
-                limits = conn.execute(
-                    text("SELECT limit_total, max_page FROM plans WHERE LOWER(name)=LOWER(:p)"),
-                    {"p": plan},
-                ).fetchone()
+            conn.execute(
+                text("""
+                    UPDATE pending_payments
+                    SET api_key=:k, status='succeeded', paid_at=NOW()
+                    WHERE payment_id=:pid
+                """),
+                {"k": key, "pid": payment_id},
+            )
 
-                conn.execute(
-                    text("""
-                        INSERT INTO api_keys (api_key, owner, plan_name, active, limit_total, max_page)
-                        VALUES (:k, :o, :p, TRUE, :lt, :mp)
-                    """),
-                    {
-                        "k": new_key,
-                        "o": email,
-                        "p": plan,
-                        "lt": limits.limit_total if limits else None,
-                        "mp": limits.max_page if limits else None,
-                    },
-                )
-
-                conn.execute(
-                    text("""
-                        UPDATE pending_payments
-                        SET api_key = :k, paid_at = NOW()
-                        WHERE payment_id = :pid
-                    """),
-                    {"k": new_key, "pid": payment_id},
-                )
-
-        background_tasks.add_task(update_status_and_key)
-        return {"received": True}
-
-    except Exception as e:
-        await send_alert("webhook_error", {"error": str(e)}, None, "/api/payment/webhook", 500)
-        raise HTTPException(status_code=500, detail="Webhook error")
+    return {"received": True}
