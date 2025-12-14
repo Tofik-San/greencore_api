@@ -89,7 +89,7 @@ def request_login(payload: LoginRequest):
             },
         )
 
-    send_login_email(email=email, token=token)
+    send_login_email(email, token)
 
     return {
         "status": "ok",
