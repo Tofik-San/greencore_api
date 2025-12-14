@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import secrets
 from fastapi.responses import JSONResponse
 from utils.notify import send_alert
+from auth.router import router as auth_router
 import uuid
 import requests
 
@@ -24,6 +25,7 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "https://www.greencore-api.ru")
 
 app = FastAPI()
 engine = create_engine(DATABASE_URL)
+app.include_router(auth_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,6 +45,7 @@ LIGHT_PATTERNS = {
     "полутень": ["part shade", "partial", "полутень", "рассеян", "утреннее"],
     "яркий": ["full sun", "sun", "прямое солнце", "яркий", "солнеч"],
 }
+
 
 # ────────────────────────────────
 # 🧠 Middleware проверки ключа и лимитов
