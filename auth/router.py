@@ -87,18 +87,30 @@ def verify_login_token(payload: VerifyToken):
         if not row:
             raise HTTPException(status_code=400, detail="invalid_or_expired_token")
 
+        # помечаем токен использованным
         conn.execute(
             text("UPDATE auth_tokens SET used = true WHERE id = :tid"),
             {"tid": row["token_id"]},
         )
 
+        # фиксируем вход
         conn.execute(
             text("UPDATE users SET last_login = now() WHERE id = :uid"),
             {"uid": row["user_id"]},
         )
 
+        api_key = row["api_key"]
+
+        # 🔑 ГЕНЕРАЦИЯ КЛЮЧА ПРИ ПЕРВОМ ВХОДЕ
+        if not api_key:
+            api_key = generate_login_token()  # можно заменить на token_hex(32) при желании
+            conn.execute(
+                text("UPDATE users SET api_key = :k WHERE id = :uid"),
+                {"k": api_key, "uid": row["user_id"]},
+            )
+
         return {
             "status": "ok",
             "user_id": row["user_id"],
-            "api_key": row["api_key"],
+            "api_key": api_key,
         }
