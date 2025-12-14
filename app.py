@@ -97,7 +97,6 @@ def get_plants(
     request: Request,
     view: Optional[str] = Query(None),
     toxicity: Optional[Literal["none","mild","toxic"]] = Query(None),
-    placement: Optional[Literal["комнатное","садовое"]] = Query(None),
     sort: Optional[Literal["id","random"]] = Query("random"),
     limit: Optional[int] = Query(None, ge=1, le=100),
 ):
@@ -114,11 +113,6 @@ def get_plants(
     if toxicity:
         query += " AND toxicity = :t"
         params["t"] = toxicity
-
-    if placement == "комнатное":
-        query += " AND indoor = true AND outdoor = false"
-    elif placement == "садовое":
-        query += " AND outdoor = true AND indoor = false"
 
     query += " ORDER BY RANDOM()" if sort == "random" else " ORDER BY id"
     query += " LIMIT :limit"
