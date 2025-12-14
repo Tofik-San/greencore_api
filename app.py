@@ -275,13 +275,16 @@ def generate_api_key(
 
 @app.post("/api/payment/session")
 async def create_payment_session(request: Request):
-    payload = await request.json()
-    plan = payload.get("plan", "free").lower()
-    email = payload.get("email")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    email = payload.get("email") or request.query_params.get("email")
+    plan = (payload.get("plan") or request.query_params.get("plan") or "free").lower()
 
     if not email:
         raise HTTPException(status_code=400, detail="email required")
-
     if not YK_SHOP_ID or not YK_SECRET_KEY:
         raise HTTPException(status_code=500, detail="YooKassa credentials not set")
 
