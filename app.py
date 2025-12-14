@@ -9,6 +9,8 @@ import secrets
 from fastapi.responses import JSONResponse
 import uuid
 import requests
+from utils.notify import send_alert
+
 
 # ────────────────────────────────
 # ⚙️ Конфигурация
@@ -159,6 +161,7 @@ def get_plants(
         query += " AND outdoor = true"
 
     if category:
+        placement = None
         query += " AND LOWER(filter_category) = :cat"
         params["cat"] = category.lower()
 
@@ -269,3 +272,197 @@ def generate_api_key(
         )
 
     return {"api_key": key, "plan": plan}
+
+@app.post("/api/payment/session")
+async def create_payment_session(request: Request):
+    payload = await request.json()
+    plan = payload.get("plan", "free").lower()
+    email = payload.get("email")
+
+    if not email:
+        raise HTTPException(status_code=400, detail="email required")
+
+    if not YK_SHOP_ID or not YK_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="YooKassa credentials not set")
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT price_rub FROM plans WHERE LOWER(name)=LOWER(:p)"),
+            {"p": plan},
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Plan not found")
+
+        amount_value = float(row.price_rub)
+
+    payment_body = {
+        "amount": {"value": f"{amount_value:.2f}", "currency": "RUB"},
+        "confirmation": {
+            "type": "redirect",
+            "return_url": f"{FRONTEND_URL}/payment/success",
+        },
+        "capture": True,
+        "description": f"GreenCore {plan.capitalize()} plan",
+        "receipt": {
+            "customer": {"email": email},
+            "items": [
+                {
+                    "description": f"GreenCore {plan.capitalize()} plan",
+                    "quantity": "1.00",
+                    "amount": {"value": f"{amount_value:.2f}", "currency": "RUB"},
+                    "vat_code": 1,
+                }
+            ],
+        },
+    }
+
+    headers = {
+        "Idempotence-Key": str(uuid.uuid4()),
+        "Content-Type": "application/json",
+    }
+
+    r = requests.post(
+        "https://api.yookassa.ru/v3/payments",
+        auth=(YK_SHOP_ID, YK_SECRET_KEY),
+        json=payment_body,
+        headers=headers,
+    )
+
+    if r.status_code not in (200, 201):
+        raise HTTPException(status_code=500, detail=f"YooKassa error: {r.text}")
+
+    data = r.json()
+    payment_id = data["id"]
+    payment_url = data["confirmation"]["confirmation_url"]
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO pending_payments (payment_id, plan_name, email, amount, status)
+                VALUES (:pid, :plan, :email, :amount, 'pending')
+            """),
+            {
+                "pid": payment_id,
+                "plan": plan,
+                "email": email,
+                "amount": amount_value,
+            },
+        )
+
+    return {"payment_id": payment_id, "payment_url": payment_url}
+
+@app.post("/api/payment/webhook")
+async def yookassa_webhook(request: Request, background_tasks: BackgroundTasks):
+    try:
+        payload = await request.json()
+        payment = payload.get("object", {})
+        payment_id = payment.get("id")
+        status = payment.get("status")
+
+        if not payment_id:
+            raise HTTPException(status_code=400, detail="payment_id missing")
+
+        def process():
+            with engine.begin() as conn:
+                conn.execute(
+                    text("""
+                        UPDATE pending_payments
+                        SET status = :status, updated_at = NOW()
+                        WHERE payment_id = :pid
+                    """),
+                    {"status": status, "pid": payment_id},
+                )
+
+                if status != "succeeded":
+                    return
+
+                row = conn.execute(
+                    text("""
+                        SELECT plan_name, email
+                        FROM pending_payments
+                        WHERE payment_id = :pid
+                    """),
+                    {"pid": payment_id},
+                ).fetchone()
+
+                if not row:
+                    return
+
+                plan, email = row.plan_name, row.email
+                api_key = secrets.token_hex(32)
+
+                limits = conn.execute(
+                    text("""
+                        SELECT limit_total, max_page
+                        FROM plans
+                        WHERE LOWER(name)=LOWER(:p)
+                    """),
+                    {"p": plan},
+                ).fetchone()
+
+                conn.execute(
+                    text("""
+                        INSERT INTO api_keys
+                        (api_key, owner, owner_email, plan_name, active, limit_total, max_page)
+                        VALUES
+                        (:k, :o, :e, :p, TRUE, :lt, :mp)
+                    """),
+                    {
+                        "k": api_key,
+                        "o": email,
+                        "e": email,
+                        "p": plan,
+                        "lt": limits.limit_total if limits else None,
+                        "mp": limits.max_page if limits else None,
+                    },
+                )
+
+                conn.execute(
+                    text("""
+                        UPDATE pending_payments
+                        SET api_key = :k, paid_at = NOW()
+                        WHERE payment_id = :pid
+                    """),
+                    {"k": api_key, "pid": payment_id},
+                )
+
+        background_tasks.add_task(process)
+
+        if status == "succeeded":
+            background_tasks.add_task(
+                send_alert,
+                "payment_success",
+                {"payment_id": payment_id},
+                None,
+                "/api/payment/webhook",
+                200,
+            )
+
+        return {"ok": True}
+
+    except Exception as e:
+        await send_alert(
+            "payment_webhook_error",
+            {"error": str(e)},
+            None,
+            "/api/payment/webhook",
+            500,
+        )
+        raise HTTPException(status_code=500, detail="Webhook error")
+@app.get("/api/payments/latest")
+def get_latest_payment(email: str):
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT api_key
+                FROM pending_payments
+                WHERE email = :email
+                  AND api_key IS NOT NULL
+                ORDER BY paid_at DESC
+                LIMIT 1
+            """),
+            {"email": email},
+        ).fetchone()
+
+    return {"api_key": row.api_key if row else None}
