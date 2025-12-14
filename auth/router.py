@@ -1,12 +1,13 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import text
-from datetime import datetime
+from datetime import datetime, timedelta
 import secrets
 import os
 
 from database import engine
-from .service import ttl_minutes, send_login_email
+from .service import send_login_email
+
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -27,8 +28,18 @@ def generate_login_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def ttl_minutes(minutes: int) -> datetime:
+    return datetime.utcnow() + timedelta(minutes=minutes)
+
+
 def assert_smtp_env():
-    required = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "MAIL_FROM"]
+    required = [
+        "SMTP_HOST",
+        "SMTP_PORT",
+        "SMTP_USER",
+        "SMTP_PASSWORD",
+        "MAIL_FROM",
+    ]
     missing = [v for v in required if not os.getenv(v)]
     if missing:
         raise RuntimeError(f"SMTP env missing: {', '.join(missing)}")
@@ -42,52 +53,50 @@ def request_login(payload: LoginRequest):
     token = generate_login_token()
     expires_at = ttl_minutes(15)
 
+    assert_smtp_env()
+
     with engine.begin() as conn:
-        row = conn.execute(
+        # user: get or create
+        user = conn.execute(
             text("SELECT id FROM users WHERE email = :email"),
             {"email": email},
-        ).mappings().first()
+        ).fetchone()
 
-        if not row:
-            row = conn.execute(
+        if not user:
+            user = conn.execute(
                 text(
-                    "INSERT INTO users (email, plan_name) "
-                    "VALUES (:email, 'free') "
-                    "RETURNING id"
+                    """
+                    INSERT INTO users (email, plan_name)
+                    VALUES (:email, 'free')
+                    RETURNING id
+                    """
                 ),
                 {"email": email},
-            ).mappings().first()
+            ).fetchone()
 
-        user_id = row["id"]
+        user_id = user.id
 
+        # insert login token
         conn.execute(
             text(
                 """
-                INSERT INTO auth_tokens (user_id, token, expires_at, used)
-                VALUES (:uid, :token, :exp, false)
+                INSERT INTO auth_tokens (user_id, token, expires_at)
+                VALUES (:uid, :token, :expires_at)
                 """
             ),
             {
                 "uid": user_id,
                 "token": token,
-                "exp": expires_at,
+                "expires_at": expires_at,
             },
         )
 
-    # 🔴 КРИТИЧЕСКОЕ МЕСТО
-    try:
-        assert_smtp_env()
-        send_login_email(email, token)
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Email send failed: {str(e)}"
-        )
+    send_login_email(email=email, token=token)
 
     return {
         "status": "ok",
-        "email": email,
-        "expires_in_sec": 15 * 60,
+        "message": "login_token_sent",
+        "expires_in_sec": 900,
     }
 
 
@@ -99,40 +108,49 @@ def verify_login_token(payload: VerifyToken):
         row = conn.execute(
             text(
                 """
-                SELECT t.id AS token_id, t.user_id, t.expires_at, t.used, u.api_key
+                SELECT
+                    t.id   AS token_id,
+                    u.id   AS user_id,
+                    u.api_key
                 FROM auth_tokens t
                 JOIN users u ON u.id = t.user_id
                 WHERE t.token = :token
+                  AND t.used = false
+                  AND t.expires_at > now()
+                LIMIT 1
                 """
             ),
             {"token": token},
         ).mappings().first()
 
         if not row:
-            raise HTTPException(status_code=400, detail="invalid_token")
+            raise HTTPException(
+                status_code=400,
+                detail="invalid_or_expired_token",
+            )
 
-        if row["used"]:
-            raise HTTPException(status_code=400, detail="token_already_used")
-
-        if row["expires_at"] < datetime.utcnow():
-            raise HTTPException(status_code=400, detail="token_expired")
-
+        # mark token as used
         conn.execute(
-            text("UPDATE auth_tokens SET used = true WHERE id = :id"),
-            {"id": row["token_id"]},
+            text("UPDATE auth_tokens SET used = true WHERE id = :tid"),
+            {"tid": row["token_id"]},
+        )
+
+        # update last login
+        conn.execute(
+            text("UPDATE users SET last_login = now() WHERE id = :uid"),
+            {"uid": row["user_id"]},
         )
 
         api_key = row["api_key"]
+
+        # generate api_key on first login
         if not api_key:
             api_key = secrets.token_hex(32)
             conn.execute(
-                text("UPDATE users SET api_key = :k, last_login = now() WHERE id = :uid"),
+                text(
+                    "UPDATE users SET api_key = :k WHERE id = :uid"
+                ),
                 {"k": api_key, "uid": row["user_id"]},
-            )
-        else:
-            conn.execute(
-                text("UPDATE users SET last_login = now() WHERE id = :uid"),
-                {"uid": row["user_id"]},
             )
 
     return {
