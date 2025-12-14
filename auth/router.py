@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 import os
 
 from .schemas import RequestLogin, VerifyToken
-from .service import generate_login_token, ttl_minutes
+from .service import generate_login_token, ttl_minutes, send_login_email
 
 load_dotenv()
 
@@ -24,25 +24,30 @@ def request_login(payload: RequestLogin):
     email = payload.email.lower()
 
     with engine.begin() as conn:
+        # 1. ищем пользователя
         row = conn.execute(
-            text("SELECT id, api_key FROM users WHERE email = :email"),
+            text("SELECT id FROM users WHERE email = :email"),
             {"email": email},
         ).mappings().first()
 
+        # 2. если нет — создаём
         if not row:
             row = conn.execute(
                 text(
-                    "INSERT INTO users (email) VALUES (:email) "
-                    "RETURNING id, api_key"
+                    "INSERT INTO users (email, plan_name) "
+                    "VALUES (:email, 'free') "
+                    "RETURNING id"
                 ),
                 {"email": email},
             ).mappings().first()
 
         user_id = row["id"]
 
+        # 3. генерируем токен
         token = generate_login_token()
         expires_at = ttl_minutes(15)
 
+        # 4. сохраняем токен
         conn.execute(
             text(
                 """
@@ -53,10 +58,12 @@ def request_login(payload: RequestLogin):
             {"uid": user_id, "token": token, "exp": expires_at},
         )
 
+    # 5. ОТПРАВЛЯЕМ ПИСЬМО (вне транзакции)
+    send_login_email(email, token)
+
     return {
         "status": "ok",
         "email": email,
-        "login_token": token,
         "expires_in_sec": 15 * 60,
     }
 
@@ -101,9 +108,9 @@ def verify_login_token(payload: VerifyToken):
 
         api_key = row["api_key"]
 
-        # 🔑 ГЕНЕРАЦИЯ КЛЮЧА ПРИ ПЕРВОМ ВХОДЕ
+        # первый вход — выдаём api_key
         if not api_key:
-            api_key = generate_login_token()  # можно заменить на token_hex(32) при желании
+            api_key = generate_login_token()
             conn.execute(
                 text("UPDATE users SET api_key = :k WHERE id = :uid"),
                 {"k": api_key, "uid": row["user_id"]},
@@ -111,6 +118,5 @@ def verify_login_token(payload: VerifyToken):
 
         return {
             "status": "ok",
-            "user_id": row["user_id"],
             "api_key": api_key,
         }
