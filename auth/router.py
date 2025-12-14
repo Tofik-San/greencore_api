@@ -1,41 +1,49 @@
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import create_engine, text
-from dotenv import load_dotenv
-import os
+from pydantic import BaseModel, EmailStr
+from sqlalchemy import text
+from datetime import datetime, timedelta
+import secrets
 
-from .schemas import RequestLogin, VerifyToken
-from .service import generate_login_token, ttl_minutes, send_login_email
-
-load_dotenv()
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DATABASE_URL)
+from database import engine
+from .service import ttl_minutes, send_login_email
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.get("/health")
-def auth_health():
-    return {"status": "auth module ready"}
+# ====== MODELS ======
 
+class LoginRequest(BaseModel):
+    email: EmailStr
+
+
+class VerifyToken(BaseModel):
+    token: str
+
+
+# ====== HELPERS ======
+
+def generate_login_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+# ====== ROUTES ======
 
 @router.post("/request-login")
-def request_login(payload: RequestLogin):
-    email = payload.email.lower()
+def request_login(payload: LoginRequest):
+    email = payload.email
+    token = generate_login_token()
+    expires_at = ttl_minutes(15)
 
     with engine.begin() as conn:
-        # 1. ищем пользователя
         row = conn.execute(
             text("SELECT id FROM users WHERE email = :email"),
             {"email": email},
         ).mappings().first()
 
-        # 2. если нет — создаём
         if not row:
             row = conn.execute(
                 text(
-                    "INSERT INTO users (email, plan_name) "
-                    "VALUES (:email, 'free') "
+                    "INSERT INTO users (email) VALUES (:email) "
                     "RETURNING id"
                 ),
                 {"email": email},
@@ -43,11 +51,6 @@ def request_login(payload: RequestLogin):
 
         user_id = row["id"]
 
-        # 3. генерируем токен
-        token = generate_login_token()
-        expires_at = ttl_minutes(15)
-
-        # 4. сохраняем токен
         conn.execute(
             text(
                 """
@@ -55,10 +58,13 @@ def request_login(payload: RequestLogin):
                 VALUES (:uid, :token, :exp, false)
                 """
             ),
-            {"uid": user_id, "token": token, "exp": expires_at},
+            {
+                "uid": user_id,
+                "token": token,
+                "exp": expires_at,
+            },
         )
 
-    # 5. ОТПРАВЛЯЕМ ПИСЬМО (вне транзакции)
     send_login_email(email, token)
 
     return {
@@ -76,47 +82,31 @@ def verify_login_token(payload: VerifyToken):
         row = conn.execute(
             text(
                 """
-                SELECT
-                    t.id AS token_id,
-                    u.id AS user_id,
-                    u.api_key
-                FROM auth_tokens t
-                JOIN users u ON u.id = t.user_id
-                WHERE t.token = :token
-                  AND t.used = false
-                  AND t.expires_at > now()
-                LIMIT 1
+                SELECT id, user_id, expires_at, used
+                FROM auth_tokens
+                WHERE token = :token
                 """
             ),
             {"token": token},
         ).mappings().first()
 
         if not row:
-            raise HTTPException(status_code=400, detail="invalid_or_expired_token")
+            raise HTTPException(status_code=400, detail="Invalid token")
 
-        # помечаем токен использованным
+        if row["used"]:
+            raise HTTPException(status_code=400, detail="Token already used")
+
+        if row["expires_at"] < datetime.utcnow():
+            raise HTTPException(status_code=400, detail="Token expired")
+
         conn.execute(
-            text("UPDATE auth_tokens SET used = true WHERE id = :tid"),
-            {"tid": row["token_id"]},
+            text(
+                "UPDATE auth_tokens SET used = true WHERE id = :id"
+            ),
+            {"id": row["id"]},
         )
 
-        # фиксируем вход
-        conn.execute(
-            text("UPDATE users SET last_login = now() WHERE id = :uid"),
-            {"uid": row["user_id"]},
-        )
-
-        api_key = row["api_key"]
-
-        # первый вход — выдаём api_key
-        if not api_key:
-            api_key = generate_login_token()
-            conn.execute(
-                text("UPDATE users SET api_key = :k WHERE id = :uid"),
-                {"k": api_key, "uid": row["user_id"]},
-            )
-
-        return {
-            "status": "ok",
-            "api_key": api_key,
-        }
+    return {
+        "status": "ok",
+        "user_id": row["user_id"],
+    }
