@@ -278,8 +278,8 @@ def create_payment_session(email: str, plan: str):
           detail=payment.get("description", "Payment error"),
       )
 
-return {
-    "payment_url": payment["confirmation"]["confirmation_url"]
+    return {
+        "payment_url": payment["confirmation"]["confirmation_url"]
 }
 
 
