@@ -90,37 +90,88 @@ async def verify_dynamic_api_key(request: Request, call_next):
     return response
 
 # ────────────────────────────────
-# 🌿 /plants (СТАРАЯ РАБОЧАЯ ЛОГИКА)
+# 🌿 /plants
 # ────────────────────────────────
 @app.get("/plants")
 def get_plants(
     request: Request,
     view: Optional[str] = Query(None),
+    light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None),
+    zone_usda: Optional[Literal["2","3","4","5","6","7","8","9","10","11","12"]] = Query(None),
     toxicity: Optional[Literal["none","mild","toxic"]] = Query(None),
+    placement: Optional[Literal["комнатное","садовое"]] = Query(None),
+    category: Optional[str] = Query(None),
     sort: Optional[Literal["id","random"]] = Query("random"),
     limit: Optional[int] = Query(None, ge=1, le=100),
 ):
     plan_cap = getattr(request.state, "max_page", None)
-    applied_limit = min(limit or 50, plan_cap) if plan_cap else (limit or 50)
+    user_limit = limit if limit is not None else 50
+    applied_limit = min(user_limit, plan_cap) if plan_cap else user_limit
 
     query = "SELECT * FROM plants WHERE 1=1"
     params = {}
 
     if view:
-        query += " AND LOWER(view) LIKE :v"
-        params["v"] = f"%{view.lower()}%"
+        query += " AND (LOWER(view) LIKE :view OR LOWER(cultivar) LIKE :view)"
+        params["view"] = f"%{view.lower()}%"
+
+    if light:
+        pats = LIGHT_PATTERNS.get(light, [])
+        if pats:
+            clauses = []
+            for i, pat in enumerate(pats):
+                key = f"light_{i}"
+                clauses.append(f"LOWER(light) LIKE :{key}")
+                params[key] = f"%{pat.lower()}%"
+            query += " AND (" + " OR ".join(clauses) + ")"
+
+    if zone_usda:
+        z_input = zone_usda.strip()
+        try:
+            z = int(z_input)
+            zmin = max(z - 1, 1)
+            zmax = min(z + 1, 12)
+            query += """
+                AND (
+                    TRIM(COALESCE(filter_zone_usda, '')) != ''
+                    AND (
+                        (CASE WHEN POSITION('-' IN REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'))>0
+                              THEN SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',1)
+                              ELSE REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') END)::int <= :zmax
+                        AND
+                        (CASE WHEN POSITION('-' IN REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'))>0
+                              THEN SPLIT_PART(REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-'),'-',2)
+                              ELSE REPLACE(REPLACE(filter_zone_usda,'–','-'),'—','-') END)::int >= :zmin
+                    )
+                )
+            """
+            params.update({"zmin": zmin, "zmax": zmax})
+        except Exception:
+            query += " AND COALESCE(filter_zone_usda,'') LIKE :zone"
+            params["zone"] = f"%{z_input}%"
 
     if toxicity:
-        query += " AND toxicity = :t"
-        params["t"] = toxicity
+        query += " AND LOWER(toxicity) = :tox"
+        params["tox"] = toxicity.lower()
+
+    if placement == "комнатное":
+        query += " AND indoor = true"
+    elif placement == "садовое":
+        query += " AND outdoor = true"
+
+    if category:
+        query += " AND LOWER(filter_category) = :cat"
+        params["cat"] = category.lower()
 
     query += " ORDER BY RANDOM()" if sort == "random" else " ORDER BY id"
     query += " LIMIT :limit"
     params["limit"] = applied_limit
 
     with engine.connect() as conn:
-        rows = conn.execute(text(query), params)
-        return {"count": rows.rowcount, "results": [dict(r._mapping) for r in rows]}
+        result = conn.execute(text(query), params)
+        plants = [dict(row._mapping) for row in result]
+
+    return {"count": len(plants), "limit": applied_limit, "results": plants}
 
 # ────────────────────────────────
 # ❤️ health
