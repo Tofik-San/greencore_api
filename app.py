@@ -81,26 +81,60 @@ async def verify_dynamic_api_key(request: Request, call_next):
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing API key")
 
-    # дальше твоя логика
+    # 🔍 Проверка ключа в БД
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT
+                    active,
+                    expires_at,
+                    limit_total,
+                    requests,
+                    max_page
+                FROM api_keys
+                WHERE api_key = :key
+                LIMIT 1
+            """),
+            {"key": api_key},
+        ).mappings().first()
 
-    r = row._mapping
-    if not r["active"]:
+    if not row:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    if not row["active"]:
         raise HTTPException(status_code=403, detail="Inactive API key")
-    if r["expires_at"] and r["expires_at"] < datetime.utcnow():
+
+    if row["expires_at"] and row["expires_at"] < datetime.utcnow():
         raise HTTPException(status_code=403, detail="API key expired")
-    if r["limit_total"] and r["requests"] >= r["limit_total"]:
+
+    if row["limit_total"] and row["requests"] >= row["limit_total"]:
         raise HTTPException(status_code=429, detail="Request limit exceeded")
 
-    request.state.max_page = r["max_page"]
+    # передаём лимит в request
+    request.state.max_page = row["max_page"]
 
     response = await call_next(request)
 
+    # 📊 логирование и счётчик
     with engine.begin() as conn:
-        conn.execute(text("UPDATE api_keys SET requests=requests+1 WHERE api_key=:key"), {"key": api_key})
-        conn.execute(text("INSERT INTO api_logs (api_key, endpoint, status_code) VALUES (:k, :e, :s)"),
-                     {"k": api_key, "e": request.url.path, "s": response.status_code})
+        conn.execute(
+            text("UPDATE api_keys SET requests = requests + 1 WHERE api_key = :key"),
+            {"key": api_key},
+        )
+        conn.execute(
+            text("""
+                INSERT INTO api_logs (api_key, endpoint, status_code)
+                VALUES (:k, :e, :s)
+            """),
+            {
+                "k": api_key,
+                "e": request.url.path,
+                "s": response.status_code,
+            },
+        )
 
     return response
+
 
 # ────────────────────────────────
 # 🌿 /plants
