@@ -59,38 +59,28 @@ async def verify_dynamic_api_key(request: Request, call_next):
         "/docs",
         "/openapi.json",
         "/health",
+        "/plans",
         "/generate_key",
         "/create_user_key",
-        "/plans",
         "/api/payment/session",
         "/api/payment/webhook",
         "/api/payments/latest",
     ]
 
-    # 🔓 Auth endpoints — всегда публичные
     if request.url.path.startswith("/auth"):
         return await call_next(request)
 
-    if any(
-        request.url.path.rstrip("/").startswith(p.rstrip("/"))
-        for p in open_paths
-    ):
+    if any(request.url.path.rstrip("/").startswith(p.rstrip("/")) for p in open_paths):
         return await call_next(request)
 
     api_key = request.headers.get("X-API-Key")
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing API key")
 
-    # 🔍 Проверка ключа в БД
     with engine.connect() as conn:
         row = conn.execute(
             text("""
-                SELECT
-                    active,
-                    expires_at,
-                    limit_total,
-                    requests,
-                    max_page
+                SELECT active, expires_at, limit_total, requests, max_page
                 FROM api_keys
                 WHERE api_key = :key
                 LIMIT 1
@@ -110,27 +100,14 @@ async def verify_dynamic_api_key(request: Request, call_next):
     if row["limit_total"] and row["requests"] >= row["limit_total"]:
         raise HTTPException(status_code=429, detail="Request limit exceeded")
 
-    # передаём лимит в request
     request.state.max_page = row["max_page"]
 
     response = await call_next(request)
 
-    # 📊 логирование и счётчик
     with engine.begin() as conn:
         conn.execute(
             text("UPDATE api_keys SET requests = requests + 1 WHERE api_key = :key"),
             {"key": api_key},
-        )
-        conn.execute(
-            text("""
-                INSERT INTO api_logs (api_key, endpoint, status_code)
-                VALUES (:k, :e, :s)
-            """),
-            {
-                "k": api_key,
-                "e": request.url.path,
-                "s": response.status_code,
-            },
         )
 
     return response
