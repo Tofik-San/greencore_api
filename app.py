@@ -158,8 +158,18 @@ def health():
 @app.get("/plans")
 def get_plans():
     with engine.connect() as conn:
-        rows = conn.execute(text("SELECT name, price_rub, limit_total, max_page FROM plans"))
-        return {"plans": [dict(r._mapping) for r in rows]}
+        rows = conn.execute(text("""
+            SELECT
+                id,
+                name,
+                price_rub AS price,
+                COALESCE(limit_total, 0) AS limit_total,
+                COALESCE(max_page, 50) AS max_page
+            FROM plans
+            ORDER BY id ASC
+        """))
+        plans = [dict(r._mapping) for r in rows]
+    return {"count": len(plans), "plans": plans}
 
 # ────────────────────────────────
 # 🆓 FREE / PAID — создание ключа по EMAIL
@@ -262,21 +272,16 @@ def create_payment_session(email: str, plan: str):
 
     payment = r.json()
 
-    with engine.begin() as conn:
-        conn.execute(
-            text("""
-                INSERT INTO pending_payments (payment_id, plan_name, email, amount, status)
-                VALUES (:pid, :p, :e, :a, 'pending')
-            """),
-            {
-                "pid": payment["id"],
-                "p": plan,
-                "e": email,
-                "a": row.price_rub,
-            },
-        )
+    if "confirmation" not in payment:
+      raise HTTPException(
+          status_code=400,
+          detail=payment.get("description", "Payment error"),
+      )
 
-    return {"payment_url": payment["confirmation"]["confirmation_url"]}
+return {
+    "payment_url": payment["confirmation"]["confirmation_url"]
+}
+
 
 # ────────────────────────────────
 # 💬 YooKassa webhook (идемпотентный)
