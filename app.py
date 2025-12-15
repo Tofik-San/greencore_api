@@ -281,10 +281,17 @@ async def create_payment_session(request: Request):
         payload = {}
 
     email = payload.get("email") or request.query_params.get("email")
-    plan = (payload.get("plan") or request.query_params.get("plan") or "free").lower()
+    plan = (payload.get("plan") or request.query_params.get("plan")).lower()
 
     if not email:
         raise HTTPException(status_code=400, detail="email required")
+
+    if plan == "free":
+        raise HTTPException(
+            status_code=400,
+            detail="Free plan does not require payment"
+        )
+
     if not YK_SHOP_ID or not YK_SECRET_KEY:
         raise HTTPException(status_code=500, detail="YooKassa credentials not set")
 
@@ -353,7 +360,10 @@ async def create_payment_session(request: Request):
             },
         )
 
-    return {"payment_id": payment_id, "payment_url": payment_url}
+    return {
+        "payment_id": payment_id,
+        "confirmation_url": payment_url
+    }
 
 @app.post("/api/payment/webhook")
 async def yookassa_webhook(request: Request, background_tasks: BackgroundTasks):
