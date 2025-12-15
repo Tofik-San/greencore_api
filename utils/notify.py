@@ -78,23 +78,26 @@ def send_api_key_email(email: str, api_key: str, plan: str) -> bool:
         ).strip()
 
         html = f"""
-        <div style="font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; line-height:1.6;">
+        <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;line-height:1.6;">
           <h2 style="color:#16a34a;margin:0 0 12px;">GreenCore — ваш API-ключ</h2>
-          <p style="margin:0 0 10px;">Тариф: <b>{plan}</b></p>
-          <p style="margin:0 0 10px;">Ваш API-ключ:</p>
-          <pre style="background:#0b0b0b;color:#a7f3d0;padding:12px;border:1px solid #16a34a;white-space:pre-wrap;word-break:break-all;border-radius:8px;">{api_key}</pre>
-          <p style="margin:12px 0 0;color:#9ca3af;font-size:12px;">
-            Если вы не совершали эту операцию, проигнорируйте письмо.
+          <p>Тариф: <b>{plan}</b></p>
+          <p>Ваш API-ключ:</p>
+          <pre style="background:#0b0b0b;color:#a7f3d0;padding:12px;border-radius:8px;word-break:break-all;">
+{api_key}
+          </pre>
+          <p style="margin-top:12px;color:#9ca3af;font-size:12px;">
+            Если вы не совершали эту операцию — проигнорируйте письмо.
           </p>
         </div>
         """
 
-        resend.emails.send(
-            from_=from_addr,
-            to=email,
-            subject="Ваш API-ключ GreenCore",
-            html=html,
-        )
+        resend.Emails.send({
+            "from": from_addr,
+            "to": email,
+            "subject": "Ваш API-ключ GreenCore",
+            "html": html,
+        })
+
         return True
 
     except Exception as e:
