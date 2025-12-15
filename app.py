@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse
 import uuid
 import requests
 from utils.notify import send_alert
+from utils.notify import send_api_key_email
+
 
 
 # ────────────────────────────────
@@ -376,25 +378,18 @@ async def yookassa_webhook(request: Request, background_tasks: BackgroundTasks):
         if not payment_id:
             raise HTTPException(status_code=400, detail="payment_id missing")
 
+        # интересует только успешный платёж
+        if status != "succeeded":
+            return {"ok": True}
+
         def process():
             with engine.begin() as conn:
-                conn.execute(
-                    text("""
-                        UPDATE pending_payments
-                        SET status = :status, updated_at = NOW()
-                        WHERE payment_id = :pid
-                    """),
-                    {"status": status, "pid": payment_id},
-                )
-
-                if status != "succeeded":
-                    return
-
                 row = conn.execute(
                     text("""
-                        SELECT plan_name, email
+                        SELECT status, api_key, plan_name, email
                         FROM pending_payments
                         WHERE payment_id = :pid
+                        FOR UPDATE
                     """),
                     {"pid": payment_id},
                 ).fetchone()
@@ -402,7 +397,13 @@ async def yookassa_webhook(request: Request, background_tasks: BackgroundTasks):
                 if not row:
                     return
 
-                plan, email = row.plan_name, row.email
+                # защита от повторного webhook
+                if row.status == "succeeded" and row.api_key:
+                    return
+
+                plan = row.plan_name
+                email = row.email
+
                 api_key = secrets.token_hex(32)
 
                 limits = conn.execute(
@@ -434,23 +435,23 @@ async def yookassa_webhook(request: Request, background_tasks: BackgroundTasks):
                 conn.execute(
                     text("""
                         UPDATE pending_payments
-                        SET api_key = :k, paid_at = NOW()
+                        SET status = 'succeeded',
+                            api_key = :k,
+                            paid_at = NOW(),
+                            updated_at = NOW()
                         WHERE payment_id = :pid
                     """),
                     {"k": api_key, "pid": payment_id},
                 )
 
-        background_tasks.add_task(process)
+                # 🔥 ОТПРАВКА ПИСЬМА С КЛЮЧОМ
+                send_api_key_email(
+                    email=email,
+                    api_key=api_key,
+                    plan=plan
+                )
 
-        if status == "succeeded":
-            background_tasks.add_task(
-                send_alert,
-                "payment_success",
-                {"payment_id": payment_id},
-                None,
-                "/api/payment/webhook",
-                200,
-            )
+        background_tasks.add_task(process)
 
         return {"ok": True}
 
@@ -463,6 +464,7 @@ async def yookassa_webhook(request: Request, background_tasks: BackgroundTasks):
             500,
         )
         raise HTTPException(status_code=500, detail="Webhook error")
+
 @app.get("/api/payments/latest")
 def get_latest_payment(email: str):
     with engine.connect() as conn:
