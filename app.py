@@ -103,7 +103,7 @@ def get_plants(
     light: Optional[Literal["тень", "полутень", "яркий"]] = Query(None),
     zone_usda: Optional[Literal["2","3","4","5","6","7","8","9","10","11","12"]] = Query(None),
     toxicity: Optional[Literal["none","mild","toxic"]] = Query(None),
-    category: Optional[Literal["indoor", "outdoor", "universal"]] = Query(None),
+    category: Optional[Literal["indoor", "perennial", "annual"]] = Query(None),
     sort: Optional[Literal["id","random"]] = Query("random"),
     limit: Optional[int] = Query(None, ge=1, le=100),
 ):
